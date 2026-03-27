@@ -17,56 +17,106 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── 1. CNN 모델 정의 ──────────────────────────────────────────────
+# ── 1. 설정 ───────────────────────────────────────────────────────
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+MODEL_PATH = r"C:\Users\a0105\Documents\Project\grain-ttt-prediction\fracture_surface\backend\fractography_cnn_best1.pth"
+
+# train.py의 ImageFolder가 자동 인식한 클래스 순서와 반드시 동일해야 함
+CNN_CLASSES  = ["Cleavage", "Ductile", "Fatigue", "Intergranular"]
+
+# 프론트엔드 카드 표시용 한글 매핑
+KO_LABELS = {
+    "Cleavage":      "취성 파괴",
+    "Ductile":       "연성 파괴",
+    "Fatigue":       "피로 파괴",
+    "Intergranular": "크리프 파괴",
+}
+
+# ── 2. CNN 모델 정의 (train.py / predict.py와 동일한 구조) ────────
 class FractographyCNN(nn.Module):
-    def __init__(self):
-        super(FractographyCNN, self).__init__()
-        # 학교에서 쓴 아키텍처 코드를 여기에 복사해서 넣으세요.
-        pass
+    def __init__(self, num_classes=4):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(256, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(0.4),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes)
+        )
 
     def forward(self, x):
-        return self.model(x)
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
 
-# 모델 로드
-MODEL_PATH = r"backend\fractography_cnn_best1.pth"
-device = torch.device("cpu")
-model = FractographyCNN()
-model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+# ── 3. 모델 로드 (서버 시작 시 1회만 실행) ───────────────────────
+model = FractographyCNN(num_classes=4).to(DEVICE)
+model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
 model.eval()
+print(f"✅ 모델 로드 완료 ({DEVICE})")
 
-# ✅ 수정 1: transforms.Compose 올바른 문법으로 수정
+# ── 4. 이미지 전처리 (train.py val_transform과 동일) ─────────────
 preprocess = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
 ])
 
-FRACTURE_TYPES = ["취성 파괴", "연성 파괴", "피로 파괴", "크리프 파괴"]
-
+# ── 5. API 엔드포인트 ─────────────────────────────────────────────
 @app.post("/analyze")
 async def analyze_fracture(file: UploadFile = File(...)):
-    # ── 2. 이미지 읽기 및 CNN 추론 ──
+
+    # 5-1. 이미지 읽기 및 전처리
     image_bytes = await file.read()
-    image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-    input_tensor = preprocess(image).unsqueeze(0)
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    input_tensor = preprocess(image).unsqueeze(0).to(DEVICE)
 
+    # 5-2. CNN 추론 (predict.py와 동일한 방식)
     with torch.no_grad():
-        outputs = model(input_tensor)
-        # ✅ 수정 2: softmax 뒤 [9, 12] 인덱싱 제거
-        probs = torch.nn.functional.softmax(outputs, dim=1)
-        conf, pred = torch.max(probs, 1)
+        output = model(input_tensor)
+        probs = torch.softmax(output, dim=1)
+        pred_idx = torch.argmax(probs, dim=1).item()
+        confidence_val = probs[0, pred_idx].item()
 
-    prediction = FRACTURE_TYPES[pred.item()]
-    confidence = f"{conf.item()*100:.1f}%"
+    pred_en = CNN_CLASSES[pred_idx]           # ex) "Cleavage"
+    prediction = KO_LABELS[pred_en]           # ex) "취성 파괴"
+    confidence = f"{confidence_val * 100:.1f}%"
 
-    # 유사도 딕셔너리 생성
+    # 5-3. 프론트 카드 4개용 유사도 딕셔너리 (한글 키)
     similarities = {
-        FRACTURE_TYPES[i]: f"{probs[0][i].item()*100:.0f}%"
-        for i in range(len(FRACTURE_TYPES))
+        KO_LABELS[CNN_CLASSES[i]]: f"{probs[0, i].item() * 100:.0f}%"
+        for i in range(len(CNN_CLASSES))
     }
 
-    # ── 3. Ollama LLM 해석 생성 ──
-    # ✅ 수정 3: prompt 닫는 괄호 뒤 [14, 15, 16] 제거
+    # 5-4. Ollama LLM 해석 생성
     prompt = (
         f"금속 파손 분석 결과, {prediction}일 확률이 {confidence}입니다. "
         f"파면학 기술자의 관점에서 이 파괴의 미세구조적 특징과 발생 원인을 "
@@ -74,14 +124,21 @@ async def analyze_fracture(file: UploadFile = File(...)):
     )
 
     try:
-        response = ollama.chat(model='llama3', messages=[{'role': 'user', 'content': prompt}])
-        explanation = response['message']['content']
-    except:
-        explanation = "LLM 분석 리포트를 생성하는 중 오류가 발생했습니다."
+        response = ollama.chat(
+            model="llama3",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        explanation = response["message"]["content"]
+    except Exception as e:
+        explanation = (
+            f"{prediction}으로 분류되었습니다 (신뢰도 {confidence}). "
+            "LLM 리포트 생성 중 오류가 발생했습니다."
+        )
+        print(f"Ollama 오류: {e}")
 
     return {
-        "prediction": prediction,
-        "confidence": confidence,
-        "similarities": similarities,
-        "explanation": explanation
+        "prediction":   prediction,    # "취성 파괴"
+        "confidence":   confidence,    # "89.3%"
+        "similarities": similarities,  # {"취성 파괴": "89%", "연성 파괴": "4%", ...}
+        "explanation":  explanation,   # LLM 생성 텍스트
     }
