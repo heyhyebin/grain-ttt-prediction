@@ -117,11 +117,18 @@ async def analyze_fracture(file: UploadFile = File(...)):
     }
 
     # 5-4. Ollama LLM 해석 생성
-    prompt = (
-        f"금속 파손 분석 결과, {prediction}일 확률이 {confidence}입니다. "
-        f"파면학 기술자의 관점에서 이 파괴의 미세구조적 특징과 발생 원인을 "
-        f"3줄 내외로 아주 쉽게 설명해줘."
-    )
+    prompt = f"""
+    당신은 재료공학 전문가입니다.
+
+    금속 파손 분석 결과, {prediction}일 확률이 {confidence}입니다.
+    이 파손의 미세구조적 특징과 발생 원인을 사용자에게 쉽게 설명하세요.
+
+    조건:
+    - 반드시 한국어로만 작성
+    - 영어 절대 사용 금지
+    - 3줄 이내
+    - 원인과 특징 포함
+    """
 
     try:
         response = ollama.chat(
