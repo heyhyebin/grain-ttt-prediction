@@ -2,13 +2,21 @@ import { useState, useRef } from "react";
 import FlipCard from "./components/FlipCard";
 
 // 비교 대상 카드 데이터 (유사도는 분석 후 백엔드로부터 받아옴)
-const FRACTURE_TYPES = ["취성 파괴", "연성 파괴", "피로 파괴", "크리프 파괴"];
+const FRACTURE_TYPES = ["취성 파괴", "연성 파괴", "피로 파괴", "입계 파괴"];
 
 const DEFAULT_SIMILARITIES = {
   "취성 파괴":  { sim: "—", best: false },
   "연성 파괴":  { sim: "—", best: false },
   "피로 파괴":  { sim: "—", best: false },
-  "크리프 파괴":{ sim: "—", best: false },
+  "입계 파괴":{ sim: "—", best: false },
+};
+
+// 대표 이미지
+const FRACTURE_IMAGES = {
+  "취성 파괴": "/images/cleavage.jpg",
+  "연성 파괴": "/images/ductile.jpg",
+  "피로 파괴": "/images/fatigue.jpg",
+  "입계 파괴": "/images/Intergranular.jpg",
 };
 
 export default function App() {
@@ -151,7 +159,7 @@ export default function App() {
           </p>
         </div>
 
-        <div className="grid lg:grid-cols-5 gap-6">
+        <div className="grid lg:grid-cols-5 gap-6 items-start">
 
           {/* 입력 이미지 카드 */}
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col">
@@ -171,6 +179,15 @@ export default function App() {
               type={type}
               similarity={similarities[type].sim}
               isBest={similarities[type].best}
+              
+              imageSlot={
+                <img
+                  src={FRACTURE_IMAGES[type]}
+                  alt={type}
+                  className="w-full h-full object-cover rounded-xl"
+                />
+              }
+
             />
           ))}
         </div>
@@ -196,8 +213,8 @@ export default function App() {
               {[
                 ["파손 유형", result.prediction],
                 ["신뢰도",   result.confidence],
-                ["특징",     "균열 전파"],
-                ["원인",     "충격/과하중"],
+                ["특징",     result.feature],
+                ["예상 사고 원인",     result.expected_cause],
               ].map(([t, v]) => (
                 <div key={t} className="p-4 bg-slate-50 rounded-xl">
                   <p className="text-sm text-slate-500">{t}</p>
@@ -214,20 +231,10 @@ export default function App() {
               </p>
             </div>
 
-            <div className="grid lg:grid-cols-2 gap-6 mt-8">
+            <div className="mt-8">
               <div className="p-5 bg-slate-50 rounded-2xl border">
                 <h4 className="text-xl font-semibold mb-3">판단 근거 설명</h4>
                 <p className="text-slate-700 leading-7">{result.explanation}</p>
-              </div>
-              <div className="p-5 bg-blue-50 rounded-2xl border border-blue-100">
-                <h4 className="text-xl font-semibold mb-3 text-blue-700">예상 사고 원인</h4>
-                <p className="text-slate-700 leading-7">
-                  분석 결과로 보아 본 파손은{" "}
-                  <span className="font-semibold">충격 하중</span>,{" "}
-                  <span className="font-semibold">과도한 응력 집중</span>, 또는{" "}
-                  <span className="font-semibold">재료 내부 결함</span> 등에 의해 발생했을 가능성이 있습니다.
-                  실제 원인은 재료 정보, 사용 환경, 반복 하중 여부와 함께 종합적으로 판단해야 합니다.
-                </p>
               </div>
             </div>
           </div>
