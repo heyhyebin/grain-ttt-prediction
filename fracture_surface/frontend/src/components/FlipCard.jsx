@@ -35,7 +35,7 @@ const FRACTURE_DETAILS = {
     prevention: "표면 처리(shot peening), 응력 집중 최소화 설계",
     color: "amber",
   },
-  "크리프 파괴": {
+  "입계 파괴": {
     en: "Creep Fracture",
     cause: "고온 환경에서 장기간 하중 작용",
     features: [
@@ -49,10 +49,30 @@ const FRACTURE_DETAILS = {
 };
 
 const COLOR_MAP = {
-  blue:  { badge: "bg-blue-100 text-blue-700",  title: "text-blue-700",  border: "border-blue-400",  dot: "bg-blue-400"  },
-  green: { badge: "bg-green-100 text-green-700", title: "text-green-700", border: "border-green-400", dot: "bg-green-400" },
-  amber: { badge: "bg-amber-100 text-amber-700", title: "text-amber-700", border: "border-amber-400", dot: "bg-amber-400" },
-  red:   { badge: "bg-red-100 text-red-700",     title: "text-red-700",   border: "border-red-400",   dot: "bg-red-400"   },
+  blue: {
+    badge: "bg-blue-100 text-blue-700",
+    title: "text-blue-700",
+    border: "border-blue-400",
+    dot: "bg-blue-400",
+  },
+  green: {
+    badge: "bg-green-100 text-green-700",
+    title: "text-green-700",
+    border: "border-green-400",
+    dot: "bg-green-400",
+  },
+  amber: {
+    badge: "bg-amber-100 text-amber-700",
+    title: "text-amber-700",
+    border: "border-amber-400",
+    dot: "bg-amber-400",
+  },
+  red: {
+    badge: "bg-red-100 text-red-700",
+    title: "text-red-700",
+    border: "border-red-400",
+    dot: "bg-red-400",
+  },
 };
 
 // ── FlipCard 컴포넌트 ────────────────────────────────────────────
@@ -62,33 +82,30 @@ export default function FlipCard({ type, similarity, isBest, imageSlot }) {
   const c = COLOR_MAP[detail.color];
 
   return (
-    // perspective 컨테이너: 3D 공간 생성
     <div
       className="cursor-pointer"
       style={{ perspective: "900px" }}
       onClick={() => setFlipped((f) => !f)}
     >
-      {/* 카드 래퍼: transform-style & transition */}
       <div
         style={{
           position: "relative",
           transformStyle: "preserve-3d",
           transition: "transform 0.55s cubic-bezier(0.4,0.2,0.2,1)",
           transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)",
-          /* 높이를 앞뒤 모두 동일하게 고정 */
-          minHeight: "260px",
+          height: "360px",
         }}
       >
         {/* ── FRONT ─────────────────────────────── */}
         <div
-          className={`absolute inset-0 rounded-2xl border shadow-sm p-4 flex flex-col
-            ${isBest ? "border-blue-500 bg-blue-50" : "bg-white border-slate-200"}`}
+          className={`absolute inset-0 rounded-2xl border shadow-sm p-4 flex flex-col ${
+            isBest ? "border-blue-500 bg-blue-50" : "bg-white border-slate-200"
+          }`}
           style={{ backfaceVisibility: "hidden" }}
         >
           <p className="text-sm text-slate-500 mb-2">{type}</p>
 
-          {/* 이미지 영역: 부모(App.js)에서 주입 */}
-          <div className="flex-1 bg-slate-200 rounded-xl flex items-center justify-center mb-3 overflow-hidden">
+          <div className="h-44 bg-slate-200 rounded-xl flex items-center justify-center mb-3 overflow-hidden flex-shrink-0">
             {imageSlot ?? (
               <span className="text-slate-400 text-sm">대표 이미지</span>
             )}
@@ -110,48 +127,58 @@ export default function FlipCard({ type, similarity, isBest, imageSlot }) {
 
         {/* ── BACK ──────────────────────────────── */}
         <div
-          className={`absolute inset-0 rounded-2xl border shadow-sm p-4 flex flex-col bg-white overflow-y-auto
-            ${c.border}`}
+          className={`absolute inset-0 rounded-2xl border shadow-sm p-4 flex flex-col bg-white ${c.border}`}
           style={{
             backfaceVisibility: "hidden",
             transform: "rotateY(180deg)",
           }}
         >
-          {/* 헤더 */}
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <p className={`text-xs font-semibold uppercase tracking-widest ${c.title}`}>
-                {detail.en}
-              </p>
-              <p className="text-base font-bold">{type}</p>
+          {/* 스크롤 영역 */}
+          <div className="flex-1 overflow-y-auto pr-1">
+            {/* 헤더 */}
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <p className={`text-xs font-semibold uppercase tracking-widest ${c.title}`}>
+                  {detail.en}
+                </p>
+                <p className="text-base font-bold">{type}</p>
+              </div>
+              <span className={`text-xs font-bold rounded-full px-2 py-0.5 ${c.badge}`}>
+                유사도 {similarity}
+              </span>
             </div>
-            <span className={`text-xs font-bold rounded-full px-2 py-0.5 ${c.badge}`}>
-              유사도 {similarity}
-            </span>
+
+            {/* 주요 원인 */}
+            <div className="mb-2">
+              <p className="text-xs font-semibold text-slate-500 uppercase mb-1">
+                주요 원인
+              </p>
+              <p className="text-sm text-slate-700">{detail.cause}</p>
+            </div>
+
+            {/* 파면 특징 */}
+            <div className="mb-2">
+              <p className="text-xs font-semibold text-slate-500 uppercase mb-1">
+                파면 특징
+              </p>
+              <ul className="space-y-1">
+                {detail.features.map((f) => (
+                  <li key={f} className="flex gap-1.5 items-start text-sm text-slate-700">
+                    <span
+                      className={`mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${c.dot}`}
+                    />
+                    {f}
+                  </li>
+                ))}
+              </ul>
+            </div>
           </div>
 
-          {/* 주요 원인 */}
-          <div className="mb-2">
-            <p className="text-xs font-semibold text-slate-500 uppercase mb-1">주요 원인</p>
-            <p className="text-sm text-slate-700">{detail.cause}</p>
-          </div>
-
-          {/* 파면 특징 */}
-          <div className="mb-2">
-            <p className="text-xs font-semibold text-slate-500 uppercase mb-1">파면 특징</p>
-            <ul className="space-y-1">
-              {detail.features.map((f) => (
-                <li key={f} className="flex gap-1.5 items-start text-sm text-slate-700">
-                  <span className={`mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${c.dot}`} />
-                  {f}
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* 예방 대책 */}
-          <div className="mt-auto pt-2 border-t border-slate-100">
-            <p className="text-xs font-semibold text-slate-500 uppercase mb-1">예방 대책</p>
+          {/* 하단 고정 영역 */}
+          <div className="pt-2 border-t border-slate-100">
+            <p className="text-xs font-semibold text-slate-500 uppercase mb-1">
+              예방 대책
+            </p>
             <p className="text-sm text-slate-700">{detail.prevention}</p>
           </div>
 
