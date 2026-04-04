@@ -19,7 +19,7 @@ app.add_middleware(
 
 # ── 1. 설정 ───────────────────────────────────────────────────────
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_PATH = r"C:\Users\a0105\Documents\Project\grain-ttt-prediction\fracture_surface\backend\fractography_cnn_best1.pth"
+MODEL_PATH = r"C:\Users\LHB\Desktop\Project\backend\fractography_cnn_best1.pth"
 
 # train.py의 ImageFolder가 자동 인식한 클래스 순서와 반드시 동일해야 함
 CNN_CLASSES  = ["Cleavage", "Ductile", "Fatigue", "Intergranular"]
@@ -29,7 +29,35 @@ KO_LABELS = {
     "Cleavage":      "취성 파괴",
     "Ductile":       "연성 파괴",
     "Fatigue":       "피로 파괴",
-    "Intergranular": "크리프 파괴",
+    "Intergranular": "입계 파괴",
+}
+
+FEATURES = {
+    "취성 파괴": "균열이 빠르게 진행되고 소성 변형이 거의 없음",
+    "연성 파괴": "큰 소성 변형과 함께 파단 발생",
+    "피로 파괴": "반복 하중으로 균열이 점진적으로 성장",
+    "입계 파괴": "결정립 경계를 따라 균열 진행",
+}
+
+CAUSES = {
+    "취성 파괴": "저온 환경, 충격 하중",
+    "연성 파괴": "과도한 하중, 재료 연성",
+    "피로 파괴": "반복 응력",
+    "입계 파괴": "고온, 재료 열화, 불순물",
+}
+
+EXPECTED_CAUSE = {
+    "취성 파괴": "충격 하중 또는 급격한 응력 집중 가능성",
+    "연성 파괴": "과도한 하중 또는 구조적 결함 가능성",
+    "피로 파괴": "장기간 반복 하중에 의한 손상 가능성",
+    "입계 파괴": "고온 환경 또는 재료 열화 가능성",
+}
+
+RULE_BASED_EXPLANATIONS = {
+    "취성 파괴": "취성 파괴는 소성 변형 없이 균열이 빠르게 진행되는 특징이 있으며, 주로 저온 환경이나 충격 하중에 의해 발생합니다.",
+    "연성 파괴": "연성 파괴는 재료가 늘어나며 큰 소성 변형 후 파단되는 특징이 있으며, 과도한 하중이 주요 원인입니다.",
+    "피로 파괴": "피로 파괴는 반복 하중으로 인해 균열이 점진적으로 성장한 뒤 파손되는 특징이 있으며, 반복 응력이 주요 원인입니다.",
+    "입계 파괴": "입계 파괴는 결정립 경계를 따라 균열이 진행되는 특징이 있으며, 고온 환경이나 재료 열화가 원인이 됩니다.",
 }
 
 # ── 2. CNN 모델 정의 (train.py / predict.py와 동일한 구조) ────────
@@ -108,6 +136,9 @@ async def analyze_fracture(file: UploadFile = File(...)):
 
     pred_en = CNN_CLASSES[pred_idx]           # ex) "Cleavage"
     prediction = KO_LABELS[pred_en]           # ex) "취성 파괴"
+
+    explanation = RULE_BASED_EXPLANATIONS[prediction]
+
     confidence = f"{confidence_val * 100:.1f}%"
 
     # 5-3. 프론트 카드 4개용 유사도 딕셔너리 (한글 키)
@@ -124,10 +155,11 @@ async def analyze_fracture(file: UploadFile = File(...)):
     이 파손의 미세구조적 특징과 발생 원인을 사용자에게 쉽게 설명하세요.
 
     조건:
-    - 반드시 한국어로만 작성
-    - 영어 절대 사용 금지
-    - 3줄 이내
-    - 원인과 특징 포함
+    - 반드시 한국어로만 3줄 이내
+    - 한국어 외 다른 언어 절대 금지
+    - 원인은 하나만 선택
+    - 특징은 구체적으로 표현
+    - 매번 다른 표현 사용
     """
 
     try:
@@ -144,8 +176,11 @@ async def analyze_fracture(file: UploadFile = File(...)):
         print(f"Ollama 오류: {e}")
 
     return {
-        "prediction":   prediction,    # "취성 파괴"
-        "confidence":   confidence,    # "89.3%"
-        "similarities": similarities,  # {"취성 파괴": "89%", "연성 파괴": "4%", ...}
-        "explanation":  explanation,   # LLM 생성 텍스트
+        "prediction": prediction,
+        "confidence": confidence,
+        "similarities": similarities,
+        "feature": FEATURES[prediction],
+        "cause": CAUSES[prediction],
+        "expected_cause": EXPECTED_CAUSE[prediction],
+        "explanation": explanation,
     }
