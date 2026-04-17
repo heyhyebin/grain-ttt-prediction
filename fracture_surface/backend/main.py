@@ -1,5 +1,3 @@
-# main.py
-
 import io
 import re
 import ollama
@@ -11,9 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from torchvision import transforms
 
 # ==========================================
-# [수정된 부분] model.py에서 신경망 구조 불러오기
+# [중요] model.py에서 신경망 구조 불러오기
 # ==========================================
 from model import FractographyNet
+
+# from deep_translator import GoogleTranslator
+# 나중에 영어 생성 → 번역기 방식으로 다시 사용할 때 주석 해제
 
 app = FastAPI()
 
@@ -26,7 +27,20 @@ app.add_middleware(
 )
 
 # --------------------------------------------------
-# 텍스트 후처리 로직
+# 번역 함수 (현재 미사용 - 필요시 주석 해제)
+# --------------------------------------------------
+"""
+def translate_to_korean(text: str) -> str:
+    try:
+        translated = GoogleTranslator(source='en', target='ko').translate(text)
+        return translated
+    except Exception as e:
+        print("번역 오류:", e)
+        return text
+"""
+
+# --------------------------------------------------
+# 텍스트 후처리
 # --------------------------------------------------
 def clean_text(text: str) -> str:
     if not text:
@@ -36,8 +50,11 @@ def clean_text(text: str) -> str:
     text = text.replace("*", "")
     text = text.replace("#", "")
 
+    # 줄 앞 번호 제거
     text = re.sub(r'^\s*\d+\.\s*', '', text, flags=re.MULTILINE)
+    # 줄 앞 bullet 제거
     text = re.sub(r'^\s*[-•]\s*', '', text, flags=re.MULTILINE)
+    # 줄바꿈 / 공백 정리
     text = re.sub(r'\n+', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
 
@@ -48,7 +65,7 @@ def clean_text(text: str) -> str:
 # --------------------------------------------------
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 학습 완료된 실제 pth 파일 경로 (경로 확인 필수)
+# 실제 pth 파일명 확인해서 필요하면 경로 수정
 MODEL_PATH = r"C:\Users\LHB\Desktop\Project\backend\fractography_cnn_best_test.pth"
 
 CNN_CLASSES = ["Cleavage", "Ductile", "Fatigue", "Intergranular"]
@@ -89,34 +106,146 @@ RULE_BASED_EXPLANATIONS = {
 }
 
 # --------------------------------------------------
-# LLM 프롬프트 생성 (생략 처리됨 - 기존 코드와 동일)
+# LLM 프롬프트 생성 (Ollama용)
 # --------------------------------------------------
 def build_prompt(prediction: str, confidence_percent: float) -> str:
-    # (기존 코드와 동일하게 유지 - 분량상 내용은 생략하지 않고 원본대로 넣으시면 됩니다)
-    # ... 기존 프롬프트 코드 그대로 사용 ...
-    pass 
+    common_prefix = f"""
+너는 파손 단면 분석 결과를 설명하는 도우미다.
+설명 대상은 전문가가 아니라 일반 사용자다.
 
+예측된 파손 유형은 {prediction}이고, 신뢰도는 {confidence_percent:.1f}%이다.
+
+다음 규칙을 반드시 지켜라:
+- 반드시 한국어로만 작성
+- 2문장 또는 3문장으로 작성
+- 어려운 전문용어는 가급적 사용하지 말 것
+- 꼭 필요한 경우에도 쉬운 말로 풀어서 설명할 것
+- 실제 표면에서 보일 수 있는 특징을 먼저 설명하고, 그 다음 원인을 설명할 것
+- 문장은 짧고 자연스럽게 작성할 것
+- 같은 뜻의 반복 표현은 금지
+- 확정하지 말고 "~로 보입니다", "~가능성이 있습니다"처럼 추정형으로 작성할 것
+- "파손 원인:", "설명:" 같은 형식적인 말은 쓰지 말 것
+- 설명문만 출력할 것
+- 불필요한 특정 조건을 단정하지 말 것
+"""
+
+    prompt_map = {
+        "연성 파괴": common_prefix + """
+이 유형은 연성 파괴이다.
+
+반드시 포함할 내용:
+- 재료가 늘어나면서 파손된 것으로 보인다는 점
+- 표면에 늘어난 흔적, 찢어진 듯한 모습, 움푹한 부분 등이 보일 수 있다는 점
+- 강한 하중이나 과도한 힘이 원인일 가능성
+- 충격에 의해 발생했다고 설명하지 말 것
+
+좋은 예시:
+표면에 재료가 늘어난 듯한 흔적과 일부 찢어진 모양이 보입니다.
+이는 재료가 힘을 받으며 늘어나다가 파손된 경우로 보입니다.
+강한 하중이 가해졌을 가능성이 있습니다.
+
+절대 쓰지 말 것:
+- 충격
+- 반복 하중
+- 급격히 깨짐
+- 쉽게 깨진다
+- 응력 변화
+- 저온
+""",
+        "취성 파괴": common_prefix + """
+이 유형은 취성 파괴이다.
+
+반드시 포함할 내용:
+- 재료가 거의 늘어나지 않은 상태에서 파손된 것으로 보인다는 점
+- 표면이 비교적 평평하거나 날카롭게 갈라진 모습이 보일 수 있다는 점
+- 충격 하중이나 응력 집중이 원인일 가능성
+- 특정 환경을 단정하지 말 것
+
+좋은 예시:
+표면이 비교적 평평하고 날카롭게 갈라진 모습이 보입니다.
+이는 재료가 거의 늘어나지 않은 상태에서 갑자기 파손된 경우로 보입니다.
+충격 하중이나 응력 집중의 영향이 있었을 가능성이 있습니다.
+
+절대 쓰지 말 것:
+- 늘어남
+- 찢어진 흔적
+- 큰 소성 변형
+- 저온
+- 낮은 온도
+- 매우 낮은 온도
+""",
+        "피로 파괴": common_prefix + """
+이 유형은 피로 파괴이다.
+
+반드시 포함할 내용:
+- 한 번에 깨진 것이 아니라 반복된 힘으로 서서히 손상된 것으로 보인다는 점
+- 표면에 반복된 흔적이나 일정한 줄무늬 같은 모습이 보일 수 있다는 점
+- 장기간 반복 하중이 원인일 가능성
+- 반복 하중이 핵심 원인임을 반드시 반영할 것
+
+좋은 예시:
+표면에 반복된 흔적이나 줄무늬처럼 보이는 부분이 관찰됩니다.
+이는 재료가 한 번에 깨진 것이 아니라, 반복된 힘으로 서서히 손상된 경우로 보입니다.
+오랜 시간 반복해서 힘을 받은 영향일 가능성이 있습니다.
+
+절대 쓰지 말 것:
+- 한 번의 큰 하중
+- 충격으로 바로 파손
+- 크게 늘어난 뒤 파손
+""",
+        "입계 파괴": common_prefix + """
+이 유형은 입계 파괴이다.
+
+반드시 포함할 내용:
+- 균열이 재료 내부의 경계를 따라 진행된 것으로 보인다는 점
+- 표면이 알갱 경계를 따라 나뉜 듯한 모습으로 보일 수 있다는 점
+- 재료 열화, 불순물, 또는 고온 환경의 영향 가능성
+- 원인을 하나만 단정하지 말 것
+
+좋은 예시:
+표면이 작은 경계를 따라 나뉜 듯한 모습이 보입니다.
+이는 균열이 재료 내부의 경계를 따라 진행된 경우로 보입니다.
+재료 열화나 불순물, 또는 고온 환경의 영향이 있었을 가능성이 있습니다.
+
+절대 쓰지 말 것:
+- 재료가 늘어나며 파손
+- 찢어진 흔적
+- 반복 하중이 주원인
+""",
+    }
+
+    return prompt_map[prediction]
+
+# --------------------------------------------------
+# 설명 검증
+# --------------------------------------------------
 def validate_explanation(prediction: str, text: str) -> str:
-    # (기존 코드와 동일)
-    # ... 기존 검증 코드 그대로 사용 ...
-    pass
+    invalid_keywords = {
+        "연성 파괴": ["반복 하중"],
+        "취성 파괴": ["늘어난 흔적"],
+        "피로 파괴": ["한 번의 큰 하중"],
+        "입계 파괴": ["반복 하중"],
+    }
+
+    banned = invalid_keywords.get(prediction, [])
+    for word in banned:
+        if word in text:
+            print(f"[validate] 금지어 감지: {word}")
+            return RULE_BASED_EXPLANATIONS[prediction]
+
+    return text
 
 # ==========================================
-# [수정된 부분] 외부 model.py 기반의 모델 로드
+# 모델 로드 (model.py 연동)
 # ==========================================
-# 기존에 있던 build_model() 함수는 삭제하고, model.py에서 가져온 구조를 사용합니다.
-# 추론 시에는 pretrained 가중치 다운로드가 불필요하므로 pretrained=False로 설정합니다.
-
 print("모델 초기화 중...")
 model = FractographyNet(num_classes=len(CNN_CLASSES), pretrained=False).to(DEVICE)
 
-# pth 파일(학습된 가중치)을 불러와 FractographyNet에 덮어씌웁니다.
 state_dict = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=True)
 model.load_state_dict(state_dict)
 
-model.eval() # 추론 모드로 전환
+model.eval()
 print(f"✅ 모델 로드 완료 ({DEVICE})")
-
 
 # --------------------------------------------------
 # 전처리
@@ -130,9 +259,8 @@ preprocess = transforms.Compose([
     )
 ])
 
-
 # --------------------------------------------------
-# API 라우터 (결과를 JSON으로 반환)
+# API 라우터
 # --------------------------------------------------
 @app.get("/")
 async def root():
@@ -145,7 +273,7 @@ async def analyze_fracture(file: UploadFile = File(...)):
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     input_tensor = preprocess(image).unsqueeze(0).to(DEVICE)
 
-    # 2. CNN 추론 (model.py의 코드가 실행됨)
+    # 2. CNN 추론
     with torch.no_grad():
         output = model(input_tensor)
         probs = torch.softmax(output, dim=1)
@@ -160,14 +288,13 @@ async def analyze_fracture(file: UploadFile = File(...)):
 
     explanation = RULE_BASED_EXPLANATIONS[prediction]
 
-    # 3. 카드용 유사도 퍼센트
+    # 3. 카드용 유사도
     similarities = {
         KO_LABELS[CNN_CLASSES[i]]: f"{probs[0, i].item() * 100:.0f}%"
         for i in range(len(CNN_CLASSES))
     }
 
-    # 4. LLM 설명 생성 (Ollama)
-    # (여기서 Ollama API를 호출하는 로직은 작성자님의 원본 유지)
+    # 4. LLM 설명 생성 (Ollama 연동 부분)
     prompt = build_prompt(prediction, confidence_percent)
     korean_explanation = explanation
 
@@ -176,18 +303,28 @@ async def analyze_fracture(file: UploadFile = File(...)):
             model="exaone3.5:2.4b",
             messages=[{"role": "user", "content": prompt}]
         )
+
         raw_explanation = response["message"]["content"].strip()
+        print("LLM 원본 응답:", raw_explanation)
+
         korean_explanation = clean_text(raw_explanation)
+        print("후처리 후:", korean_explanation)
+
         korean_explanation = validate_explanation(prediction, korean_explanation)
+        print("최종 설명:", korean_explanation)
+
+        # 만약 영어로 뱉는 문제가 생겨서 번역기를 켜야 한다면 아래 주석을 해제하세요.
+        # korean_explanation = translate_to_korean(korean_explanation)
+
     except Exception as e:
-        print(f"Ollama 오류: {e}")
         korean_explanation = (
             f"{prediction}으로 분류되었습니다. "
             f"신뢰도는 {confidence}입니다. "
-            "설명 생성 중 오류가 발생하여 기본 설명을 제공합니다."
+            "설명 생성 중 오류가 발생했습니다."
         )
+        print(f"Ollama 오류: {e}")
 
-    # 5. 최종 결과 반환 (이 Dictionary 형태가 자동으로 JSON으로 변환되어 프론트엔드로 갑니다)
+    # 5. JSON 반환
     return {
         "prediction": prediction,
         "confidence": confidence,
