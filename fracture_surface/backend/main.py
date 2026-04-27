@@ -1,13 +1,31 @@
+"""
+실행:
+    uvicorn main:app --reload --port 8000
+
+폴더 구조:
+    backend/
+        main.py              ← 이 파일
+        model_v5.py          ← 모델 정의 (단일 소스)
+        llm_service.py       ← LLM 분석 생성
+        model/
+            fractography_best.pth  ← 학습 완료 가중치
+"""
+
 import io
+import os
 
 import torch
-import torch.nn as nn
 from PIL import Image
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from torchvision import transforms, models
+from torchvision import transforms
 
 from llm_service import generate_llm_analysis
+
+
+# ── model_v5에서 모델 클래스 import ──
+# train_v5.py와 동일한 모델 정의를 사용하므로 가중치 호환이 보장됩니다.
+from model_v5 import FractographyNet
 
 
 app = FastAPI()
@@ -25,7 +43,8 @@ app.add_middleware(
 # --------------------------------------------------
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-MODEL_PATH = r"C:\Users\LHB\Desktop\Project\backend\fractography_cnn_best_test.pth"
+# .pth 파일 경로 (학습 후 checkpoints/fractography_best.pth를 여기로 복사)
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "model", "fractography_best.pth")
 
 CNN_CLASSES = ["Cleavage", "Ductile", "Fatigue", "Intergranular"]
 
@@ -36,61 +55,49 @@ KO_LABELS = {
     "Intergranular": "입계 파괴",
 }
 
-
-# --------------------------------------------------
-# 모델 정의
-# --------------------------------------------------
-def build_model(num_classes=4):
-    model = models.efficientnet_b2(weights=None)
-
-    in_features = model.classifier[1].in_features
-
-    model.classifier = nn.Sequential(
-        nn.Dropout(0.4),
-        nn.Linear(in_features, 512),
-        nn.BatchNorm1d(512),
-        nn.ReLU(),
-        nn.Dropout(0.3),
-        nn.Linear(512, 128),
-        nn.BatchNorm1d(128),
-        nn.ReLU(),
-        nn.Dropout(0.2),
-        nn.Linear(128, num_classes),
-    )
-
-    return model
+# 학습 시 사용한 백본 버전과 동일하게 설정하세요.
+# train_v5.py에서 --backbone v2로 학습했으면 "v2",
+# --backbone v1으로 학습했으면 "v1"
+BACKBONE_VERSION = "auto"
 
 
 # --------------------------------------------------
 # 모델 로드
 # --------------------------------------------------
-model = build_model(num_classes=4).to(DEVICE)
+# pretrained=False: 추론 서버에서는 ImageNet 가중치를 다운로드할 필요 없음
+# .pth 파일에 모든 가중치가 포함되어 있음
+model = FractographyNet(
+    num_classes=len(CNN_CLASSES),
+    pretrained=False,               # ← 핵심: 사전학습 가중치 다운로드 안 함
+    backbone_version=BACKBONE_VERSION,
+).to(DEVICE)
 
-state_dict = torch.load(
-    MODEL_PATH,
-    map_location=DEVICE,
-    weights_only=True,
-)
-
-model.load_state_dict(state_dict)
-model.eval()
-
-print(f"✅ 모델 로드 완료 ({DEVICE})")
+try:
+    state_dict = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=True)
+    model.load_state_dict(state_dict)
+    model.eval()
+    print(f"✅ 모델 로드 완료: {model.backbone_name} ({DEVICE})")
+    print(f"   가중치: {MODEL_PATH}")
+except FileNotFoundError:
+    print(f"❌ 가중치 파일을 찾을 수 없습니다: {MODEL_PATH}")
+    print(f"   학습 후 checkpoints/fractography_best.pth를 model/ 폴더로 복사하세요.")
+except RuntimeError as e:
+    print(f"❌ 가중치 로드 실패 (모델 구조 불일치 가능): {e}")
+    print(f"   학습 시 사용한 백본 버전과 BACKBONE_VERSION이 일치하는지 확인하세요.")
 
 
 # --------------------------------------------------
-# 이미지 전처리
+# 이미지 전처리 (train_v5.py val_transform과 동일)
 # --------------------------------------------------
-preprocess = transforms.Compose(
-    [
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225],
-        ),
-    ]
-)
+preprocess = transforms.Compose([
+    transforms.Resize(256),           # IMG_SIZE + 32
+    transforms.CenterCrop(224),       # IMG_SIZE
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225],
+    ),
+])
 
 
 # --------------------------------------------------
@@ -98,7 +105,11 @@ preprocess = transforms.Compose(
 # --------------------------------------------------
 @app.get("/")
 async def root():
-    return {"message": "Fractography API is running"}
+    return {
+        "message": "Fractography API is running",
+        "model": model.backbone_name,
+        "device": str(DEVICE),
+    }
 
 
 @app.post("/analyze")
@@ -107,14 +118,11 @@ async def analyze_fracture(
     material: str = Form(""),
     environment: str = Form(""),
 ):
-    print("재질:", material)
-    print("환경:", environment)
+    print(f"요청 수신 — 재질: {material}, 환경: {environment}")
 
-    # 이미지 읽기
+    # 이미지 읽기 및 전처리
     image_bytes = await file.read()
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-
-    # CNN 입력 형태로 변환
     input_tensor = preprocess(image).unsqueeze(0).to(DEVICE)
 
     # CNN 예측
@@ -126,7 +134,6 @@ async def analyze_fracture(
 
     pred_en = CNN_CLASSES[pred_idx]
     prediction = KO_LABELS[pred_en]
-
     confidence_percent = confidence_val * 100
     confidence = f"{confidence_percent:.1f}%"
 
