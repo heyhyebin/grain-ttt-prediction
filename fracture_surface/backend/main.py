@@ -5,7 +5,7 @@
 폴더 구조:
     backend/
         main.py              ← 이 파일
-        model_v5.py          ← 모델 정의 (단일 소스)
+        model.py          ← 모델 정의 (단일 소스)
         llm_service.py       ← LLM 분석 생성
         model/
             fractography_best.pth  ← 학습 완료 가중치
