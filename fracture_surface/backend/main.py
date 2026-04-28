@@ -25,7 +25,7 @@ from llm_service import generate_llm_analysis
 
 # ── model_v5에서 모델 클래스 import ──
 # train_v5.py와 동일한 모델 정의를 사용하므로 가중치 호환이 보장됩니다.
-from model_v5 import FractographyNet
+from model import FractographyNet
 
 
 app = FastAPI()
