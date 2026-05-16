@@ -49,7 +49,6 @@ export default function App() {
   const fileRef = useRef(null);
 
   const [previewUrl, setPreviewUrl] = useState(null);
-  const [imageBase64, setImageBase64] = useState(null);
   const [thumbnailBase64, setThumbnailBase64] = useState(null);
   const [uploading, setUploading] = useState(false);
 
@@ -57,6 +56,13 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [similarities, setSimilarities] = useState(DEFAULT_SIMILARITIES);
   const [history, setHistory] = useState([]);
+
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [selectedCompareIds, setSelectedCompareIds] = useState([]);
+  const [showCompareModal, setShowCompareModal] = useState(false);
+
+  const [compareSummary, setCompareSummary] = useState("");
+  const [compareLoading, setCompareLoading] = useState(false);
 
   const [showGradcamModal, setShowGradcamModal] = useState(false);
 
@@ -79,13 +85,15 @@ export default function App() {
     CONFIDENCE_BOX_STYLES[result?.confidence_status] ||
     CONFIDENCE_BOX_STYLES.medium;
 
+  const compareItems = history.filter((item) =>
+    selectedCompareIds.includes(item.id)
+  );
+
   const fileToBase64 = (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-
       reader.onload = () => resolve(reader.result);
       reader.onerror = reject;
-
       reader.readAsDataURL(file);
     });
   };
@@ -127,7 +135,6 @@ export default function App() {
       const thumbnail = await makeThumbnail(file);
 
       setPreviewUrl(base64);
-      setImageBase64(base64);
       setThumbnailBase64(thumbnail);
       setResult(null);
       setSimilarities(DEFAULT_SIMILARITIES);
@@ -195,15 +202,32 @@ export default function App() {
   const handleHistoryClick = (item) => {
     setResult(item.result);
     setPreviewUrl(item.image);
-    setImageBase64(item.image);
     setThumbnailBase64(item.image);
     setMaterial(item.result.material || "");
     updateSimilarities(item.result);
     setShowGradcamModal(false);
   };
 
+  const toggleCompareSelect = (id) => {
+    setSelectedCompareIds((prev) => {
+      if (prev.includes(id)) {
+        return prev.filter((itemId) => itemId !== id);
+      }
+
+      if (prev.length >= 3) {
+        alert("비교는 최대 3개까지 선택할 수 있습니다.");
+        return prev;
+      }
+
+      return [...prev, id];
+    });
+  };
+
   const clearHistory = () => {
     setHistory([]);
+    setSelectedCompareIds([]);
+    setShowCompareModal(false);
+    setCompareSummary("");
     localStorage.removeItem("analysisHistory");
   };
 
@@ -241,6 +265,42 @@ export default function App() {
       alert("분석 결과 처리 중 오류가 발생했습니다. 콘솔을 확인해주세요.");
     } finally {
       setUploading(false);
+    }
+  };
+
+  const handleCompareWithLLM = async () => {
+    if (compareItems.length < 2) {
+      alert("비교할 기록을 2개 이상 선택해주세요.");
+      return;
+    }
+
+    try {
+      setCompareLoading(true);
+      setCompareSummary("");
+
+      const payload = {
+        items: compareItems.map((item) => item.result),
+      };
+
+      const res = await fetch("http://localhost:8000/compare", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        throw new Error(`비교 분석 오류: ${res.status}`);
+      }
+
+      const data = await res.json();
+      setCompareSummary(data.compare_summary || "");
+    } catch (err) {
+      console.error("LLM 비교 설명 오류:", err);
+      alert("LLM 비교 설명 생성 중 오류가 발생했습니다.");
+    } finally {
+      setCompareLoading(false);
     }
   };
 
@@ -287,19 +347,53 @@ export default function App() {
   return (
     <div className={layout.page}>
       <div className="flex min-h-screen">
-        <aside className="w-80 bg-white border-r border-slate-200 p-5 hidden lg:block">
+        <button
+          onClick={() => setSidebarOpen(!sidebarOpen)}
+          className={`fixed top-5 z-50 rounded-r-xl bg-slate-900 text-white px-3 py-3 text-sm shadow-lg transition-all duration-300 ${
+            sidebarOpen ? "left-80" : "left-0"
+          }`}
+        >
+          {sidebarOpen ? "‹" : "›"}
+        </button>
+
+        <aside
+          className={`fixed lg:sticky top-0 left-0 z-40 h-screen bg-white border-r border-slate-200 transition-all duration-300 overflow-y-auto overflow-x-hidden ${
+            sidebarOpen
+              ? "w-80 translate-x-0 p-5"
+              : "w-0 -translate-x-full p-0 border-none"
+          }`}
+        >
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold">분석 기록</h2>
+            <h2 className="text-lg font-bold whitespace-nowrap">분석 기록</h2>
 
             {history.length > 0 && (
               <button
                 onClick={clearHistory}
-                className="text-xs text-slate-400 hover:text-red-500"
+                className="text-xs text-slate-400 hover:text-red-500 whitespace-nowrap"
               >
                 전체 삭제
               </button>
             )}
           </div>
+
+          {history.length > 0 && (
+            <div className="mb-4 p-3 rounded-xl bg-blue-50 border border-blue-100">
+              <p className="text-xs text-blue-700 mb-2">
+                비교할 기록을 2~3개 선택하세요.
+              </p>
+
+              <button
+                onClick={() => {
+                  setCompareSummary("");
+                  setShowCompareModal(true);
+                }}
+                disabled={selectedCompareIds.length < 2}
+                className="w-full rounded-lg bg-blue-600 text-white py-2 text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-blue-700 transition"
+              >
+                비교하기 ({selectedCompareIds.length})
+              </button>
+            </div>
+          )}
 
           <div className="space-y-3">
             {history.length === 0 && (
@@ -314,14 +408,27 @@ export default function App() {
                 MATERIAL_LABELS[itemResult.material] ||
                 itemResult.material ||
                 "-";
+              const checked = selectedCompareIds.includes(item.id);
 
               return (
-                <button
+                <div
                   key={item.id}
                   onClick={() => handleHistoryClick(item)}
-                  className="w-full text-left p-3 bg-slate-50 rounded-xl border hover:border-blue-300 hover:bg-blue-50 transition"
+                  className={`relative w-full text-left p-3 rounded-xl border transition cursor-pointer ${
+                    checked
+                      ? "bg-blue-50 border-blue-400"
+                      : "bg-slate-50 hover:border-blue-300 hover:bg-blue-50"
+                  }`}
                 >
-                  <div className="flex gap-3">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => toggleCompareSelect(item.id)}
+                    className="absolute top-3 right-3 w-4 h-4 accent-blue-600 cursor-pointer"
+                  />
+
+                  <div className="flex gap-3 pr-6">
                     <div className="w-14 h-14 rounded-lg bg-slate-200 overflow-hidden shrink-0">
                       {item.image ? (
                         <img
@@ -351,13 +458,13 @@ export default function App() {
                       </p>
                     </div>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
         </aside>
 
-        <main className="flex-1">
+        <main className="flex-1 min-w-0">
           <header className="border-b border-slate-200 bg-white/90 backdrop-blur sticky top-0 z-20">
             <div className={`${layout.container} py-4`}>
               <p className="text-sm font-semibold tracking-[0.2em] text-blue-600 uppercase">
@@ -619,6 +726,144 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {showCompareModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
+          <div className="bg-white rounded-3xl max-w-6xl w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div>
+                <h3 className="text-2xl font-bold">분석 결과 비교</h3>
+                <p className="text-sm text-slate-500 mt-1">
+                  선택한 분석 기록의 이미지, 예측 유형, 신뢰도, 재질, 설명을
+                  비교합니다.
+                </p>
+
+                <button
+                  onClick={handleCompareWithLLM}
+                  disabled={compareItems.length < 2 || compareLoading}
+                  className="mt-4 rounded-xl bg-blue-600 text-white px-4 py-2 text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-blue-700 transition"
+                >
+                  {compareLoading
+                    ? "비교 설명 생성 중..."
+                    : "LLM으로 비교 설명 생성"}
+                </button>
+              </div>
+
+              <button
+                onClick={() => setShowCompareModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
+              >
+                닫기
+              </button>
+            </div>
+
+            {compareSummary && (
+              <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-blue-800">
+                <p className="text-sm font-semibold mb-2">LLM 비교 해석</p>
+                <p className="text-sm leading-6">{compareSummary}</p>
+              </div>
+            )}
+
+            {compareItems.length < 2 ? (
+              <div className="rounded-2xl bg-slate-50 border p-8 text-center text-slate-500">
+                비교할 기록을 2개 이상 선택해주세요.
+              </div>
+            ) : (
+              <div
+                className={`grid gap-4 ${
+                  compareItems.length === 2 ? "md:grid-cols-2" : "md:grid-cols-3"
+                }`}
+              >
+                {compareItems.map((item, index) => {
+                  const itemResult = item.result;
+                  const itemMaterial =
+                    MATERIAL_LABELS[itemResult.material] ||
+                    itemResult.material ||
+                    "-";
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border bg-slate-50 p-4"
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <p className="text-sm font-bold text-blue-600">
+                          비교 {index + 1}
+                        </p>
+                        <p className="text-xs text-slate-400">{item.time}</p>
+                      </div>
+
+                      <div className="h-40 bg-white rounded-xl border overflow-hidden mb-4 flex items-center justify-center">
+                        {item.image ? (
+                          <img
+                            src={item.image}
+                            alt="비교 이미지"
+                            className="w-full h-full object-contain"
+                          />
+                        ) : (
+                          <p className="text-sm text-slate-400">No Image</p>
+                        )}
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="bg-white rounded-xl border p-3">
+                          <p className="text-xs text-slate-500">파손 유형</p>
+                          <p className="font-bold">
+                            {itemResult.display_prediction ||
+                              itemResult.prediction}
+                          </p>
+                        </div>
+
+                        <div className="bg-white rounded-xl border p-3">
+                          <p className="text-xs text-slate-500">신뢰도</p>
+                          <p className="font-bold text-blue-600">
+                            {itemResult.confidence}
+                          </p>
+                        </div>
+
+                        <div className="bg-white rounded-xl border p-3">
+                          <p className="text-xs text-slate-500">재질</p>
+                          <p className="font-bold">{itemMaterial}</p>
+                        </div>
+
+                        <div className="bg-white rounded-xl border p-3">
+                          <p className="text-xs text-slate-500">혼합 여부</p>
+                          <p className="font-bold">
+                            {itemResult.is_mixed
+                              ? "혼합 가능성 있음"
+                              : "단일 유형 가능성 높음"}
+                          </p>
+                        </div>
+
+                        <div className="bg-white rounded-xl border p-3">
+                          <p className="text-xs text-slate-500">주요 특징</p>
+                          <p className="text-sm leading-6">
+                            {itemResult.feature || "-"}
+                          </p>
+                        </div>
+
+                        <div className="bg-white rounded-xl border p-3">
+                          <p className="text-xs text-slate-500">예상 원인</p>
+                          <p className="text-sm leading-6">
+                            {itemResult.expected_cause || "-"}
+                          </p>
+                        </div>
+
+                        <div className="bg-white rounded-xl border p-3">
+                          <p className="text-xs text-slate-500">설명</p>
+                          <p className="text-sm leading-6">
+                            {itemResult.explanation || "-"}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {showGradcamModal && result?.gradcam_image && (
         <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6">
