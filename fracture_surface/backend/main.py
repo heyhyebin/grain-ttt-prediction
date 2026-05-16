@@ -9,7 +9,7 @@ from torchvision import transforms
 
 from model import load_model
 from gradcam import make_gradcampp_base64
-from llm_service import generate_llm_analysis
+from llm_service import generate_llm_analysis, generate_compare_analysis
 
 
 app = FastAPI()
@@ -145,13 +145,17 @@ async def analyze_fracture(
         material=material,
     )
 
-    gradcam_image = make_gradcampp_base64(
-        model=model,
-        input_tensor=input_tensor,
-        original_image=image,
-        target_class_idx=top1_idx,
-        img_size=IMG_SIZE,
-    )
+    try:
+        gradcam_image = make_gradcampp_base64(
+            model=model,
+            input_tensor=input_tensor,
+            original_image=image,
+            target_class_idx=top1_idx,
+            img_size=IMG_SIZE,
+        )
+    except Exception as e:
+        print(f"Grad-CAM++ 생성 오류: {e}")
+        gradcam_image = None
 
     return {
         "prediction": prediction,
@@ -175,4 +179,28 @@ async def analyze_fracture(
         "confidence_message": confidence_message,
 
         "gradcam_image": gradcam_image,
+    }
+
+
+@app.post("/compare")
+async def compare_analysis(payload: dict):
+    items = payload.get("items", [])
+
+    if len(items) < 2:
+        return {
+            "compare_summary": "비교하려면 최소 2개의 분석 결과가 필요합니다."
+        }
+
+    try:
+        compare_summary = generate_compare_analysis(items)
+    except Exception as e:
+        print(f"비교 설명 생성 오류: {e}")
+        compare_summary = (
+            "선택한 분석 결과들은 파손 유형, 신뢰도, 재질, 주요 특징에서 차이가 있습니다. "
+            "신뢰도가 낮은 결과는 추가 이미지나 전문가 검토가 필요할 수 있으며, "
+            "각 결과는 단일 판단보다 비교 관점에서 함께 해석하는 것이 좋습니다."
+        )
+
+    return {
+        "compare_summary": compare_summary
     }
