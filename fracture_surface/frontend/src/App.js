@@ -3,6 +3,22 @@ import FlipCard from "./components/FlipCard";
 
 const FRACTURE_TYPES = ["취성 파괴", "연성 파괴", "피로 파괴", "입계 파괴"];
 
+// [수정 - 한글-영문 클래스명 매핑 및 토글 칩 색상 상수 추가]
+const EN_NAMES = {
+  "취성 파괴": "Cleavage",
+  "연성 파괴": "Ductile",
+  "피로 파괴": "Fatigue",
+  "입계 파괴": "Intergranular",
+};
+
+const CLASS_COLORS = {
+  Cleavage:      "#f59b3b",
+  Ductile:       "#22c55e",
+  Fatigue:       "#15ccfa",
+  Intergranular: "#4444ef",
+};
+// [수정 끝]
+
 const DEFAULT_SIMILARITIES = {
   "취성 파괴": { sim: "—", best: false, mixed: false },
   "연성 파괴": { sim: "—", best: false, mixed: false },
@@ -44,6 +60,128 @@ const layout = {
   resultBox: "p-5 bg-slate-50 rounded-xl",
   select: "p-3 border rounded-xl bg-white",
 };
+
+// [수정 - GradCAM 토글 뷰어 컴포넌트 추가]
+// 클래스별 RGBA 레이어를 canvas에 합성하고, 실제 컨투어가 있는 클래스만 토글 칩으로 표시
+function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }) {
+  const canvasRef    = useRef(null);
+  const baseImgRef   = useRef(null);
+  const layerImgsRef = useRef({});
+
+  const allClasses    = Object.keys(result.gradcam_layers || {});
+  const activeClasses = allClasses.filter((name) => {
+    const contours = result.gradcam_contours?.[name];
+    return contours && contours.length > 0;
+  });
+
+  const [checked, setChecked] = useState(() =>
+    Object.fromEntries(allClasses.map((n) => [n, true]))
+  );
+
+  // 이미지 로드 완료 후 즉시 canvas에 그리기
+  useEffect(() => {
+    const loadImg = (src) =>
+      new Promise((res) => {
+        const img = new Image();
+        img.onload = () => res(img);
+        img.src = src;
+      });
+    (async () => {
+      baseImgRef.current   = await loadImg(result.base_image);
+      layerImgsRef.current = {};
+      for (const name of allClasses) {
+        const src = result.gradcam_layers?.[name];
+        if (src) layerImgsRef.current[name] = await loadImg(src);
+      }
+      const canvas = canvasRef.current;
+      const base   = baseImgRef.current;
+      if (!canvas || !base) return;
+      canvas.width  = base.naturalWidth;
+      canvas.height = base.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(base, 0, 0);
+      for (const name of allClasses) {
+        const layerImg = layerImgsRef.current[name];
+        if (layerImg) ctx.drawImage(layerImg, 0, 0);
+      }
+    })();
+  }, [result]);
+
+  // checked 상태 변경 시 canvas 다시 그리기
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const base   = baseImgRef.current;
+    if (!canvas || !base || base.naturalWidth === 0) return;
+    canvas.width  = base.naturalWidth;
+    canvas.height = base.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(base, 0, 0);
+    for (const name of allClasses) {
+      if (!checked[name]) continue;
+      const layerImg = layerImgsRef.current[name];
+      if (layerImg) ctx.drawImage(layerImg, 0, 0);
+    }
+  }, [checked, allClasses]);
+
+  const toggle = (name) =>
+    setChecked((prev) => ({ ...prev, [name]: !prev[name] }));
+
+  return (
+    <div>
+      {activeClasses.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-3">
+          {activeClasses.map((name) => {
+            const koName = Object.keys(EN_NAMES).find((k) => EN_NAMES[k] === name);
+            const color  = CLASS_COLORS[name];
+            const on     = checked[name];
+            return (
+              <button
+                key={name}
+                onClick={() => toggle(name)}
+                style={{
+                  borderColor:     color,
+                  backgroundColor: on ? color : "transparent",
+                  color:           on ? "#fff" : color,
+                }}
+                className={`px-3 py-1 rounded-full font-semibold border-2 transition ${chipSize}`}
+              >
+                {koName || name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <div className={`w-full ${canvasClass} rounded-xl border bg-white overflow-hidden flex items-center justify-center`}>
+        <canvas ref={canvasRef} className="w-full h-full object-contain" style={{ display: "block" }} />
+      </div>
+    </div>
+  );
+}
+// [수정 끝]
+
+// [수정 - GradCAM 확대 모달 컴포넌트 추가]
+// 기존 단순 img 태그 확대 팝업을 GradcamView 기반 레이어 토글 모달로 교체
+function GradcamModal({ result, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6">
+      <div className="bg-white rounded-3xl max-w-5xl w-full p-5 shadow-2xl">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-xl font-bold">Grad-CAM++ 확대 보기</h3>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
+          >
+            닫기
+          </button>
+        </div>
+        <GradcamView result={result} chipSize="text-sm" canvasClass="max-h-[70vh]" />
+      </div>
+    </div>
+  );
+}
+// [수정 끝]
 
 export default function App() {
   const fileRef = useRef(null);
@@ -675,27 +813,17 @@ export default function App() {
                       )}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() =>
-                        result.gradcam_image && setShowGradcamModal(true)
-                      }
-                      className="w-full h-[260px] rounded-xl border bg-white flex items-center justify-center overflow-hidden hover:border-blue-300 transition"
-                    >
-                      {result.gradcam_image ? (
-                        <img
-                          src={result.gradcam_image}
-                          alt="Grad-CAM++"
-                          className="w-full h-full object-contain"
-                        />
-                      ) : (
-                        <div className="text-center px-6">
-                          <p className="text-slate-500 font-medium">
-                            Grad-CAM++ 결과가 없습니다.
-                          </p>
-                        </div>
-                      )}
-                    </button>
+                    {/* [수정 - 기존 img 태그를 GradcamView 컴포넌트로 교체: 작은 뷰에도 토글 칩 표시] */}
+                    {result.gradcam_layers ? (
+                      <GradcamView result={result} chipSize="text-xs" canvasClass="h-[260px]" />
+                    ) : (
+                      <div className="w-full h-[260px] rounded-xl border bg-white flex items-center justify-center">
+                        <p className="text-slate-500 font-medium">
+                          Grad-CAM++ 결과가 없습니다.
+                        </p>
+                      </div>
+                    )}
+                    {/* [수정 끝] */}
                   </div>
                 </div>
               </div>
@@ -865,30 +993,11 @@ export default function App() {
         </div>
       )}
 
-      {showGradcamModal && result?.gradcam_image && (
-        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6">
-          <div className="bg-white rounded-3xl max-w-5xl w-full p-5 shadow-2xl">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-xl font-bold">Grad-CAM++ 확대 보기</h3>
-
-              <button
-                onClick={() => setShowGradcamModal(false)}
-                className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
-              >
-                닫기
-              </button>
-            </div>
-
-            <div className="bg-slate-100 rounded-2xl p-4">
-              <img
-                src={result.gradcam_image}
-                alt="Grad-CAM++ 확대"
-                className="w-full max-h-[75vh] object-contain rounded-xl"
-              />
-            </div>
-          </div>
-        </div>
+      {/* [수정 - 기존 단순 img 확대 모달을 GradcamModal 컴포넌트로 교체: 레이어 토글 기능 포함] */}
+      {showGradcamModal && result && (
+        <GradcamModal result={result} onClose={() => setShowGradcamModal(false)} />
       )}
+      {/* [수정 끝] */}
     </div>
   );
 }
