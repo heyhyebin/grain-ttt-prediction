@@ -323,3 +323,67 @@ def generate_llm_analysis(
         "expected_cause": llm_expected_cause,
         "explanation": korean_explanation,
     }
+
+
+def generate_compare_analysis(items: list) -> str:
+    """여러 분석 결과를 비교하는 LLM 설명 생성."""
+
+    # 비교 텍스트 구성
+    items_text = ""
+    for i, item in enumerate(items, 1):
+        prediction     = item.get("display_prediction") or item.get("prediction", "알 수 없음")
+        confidence     = item.get("confidence", "—")
+        material       = item.get("material", "")
+        feature        = item.get("feature", "")
+        expected_cause = item.get("expected_cause", "")
+        items_text += (
+            f"\n[결과 {i}]\n"
+            f"- 파손 유형: {prediction}\n"
+            f"- 신뢰도: {confidence}\n"
+            f"- 재질: {material or '미선택'}\n"
+            f"- 주요 특징: {feature}\n"
+            f"- 예상 원인: {expected_cause}\n"
+        )
+
+    prompt = f"""
+너는 파손단면 분석 결과를 비교 설명하는 도우미다.
+아래는 여러 개의 파손단면 이미지 분석 결과다.
+
+{items_text}
+
+위 결과들을 비교하여 3~5문장으로 요약 설명해라.
+- 파손 유형이 같은지 다른지 언급한다.
+- 신뢰도 차이가 있으면 언급한다.
+- 재질이 다르면 그 영향을 간략히 언급한다.
+- 확정 표현 금지. "가능성이 있습니다", "추정됩니다" 형태로 작성한다.
+- 반드시 한국어로만 작성한다.
+- JSON 없이 평문으로만 출력한다.
+"""
+
+    fallback = (
+        "선택한 분석 결과들은 파손 유형, 신뢰도, 재질에서 차이가 있습니다. "
+        "신뢰도가 낮은 결과는 추가 이미지나 전문가 검토가 필요할 수 있으며, "
+        "각 결과는 단일 판단보다 비교 관점에서 함께 해석하는 것이 좋습니다."
+    )
+
+    try:
+        response = ollama.chat(
+            model="exaone3.5:2.4b",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "너는 파손단면 분석 비교 설명 생성기다. "
+                        "반드시 한국어 평문으로만 출력한다."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            options={"temperature": 0.2, "top_p": 0.8},
+        )
+        result = clean_text(response["message"]["content"].strip())
+        return result if result else fallback
+
+    except Exception as e:
+        print(f"Ollama 비교 오류: {e}")
+        return fallback
