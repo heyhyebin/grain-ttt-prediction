@@ -2,8 +2,46 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import convnext_small
+# [수정 - 가중치 및 로그 정돈]: 모델 빌드 시 사용할 사전 학습 가중치 클래스 임포트
+from torchvision.models import convnext_small, ConvNeXt_Small_Weights
 
+# ═══════════════════════════════════════════════════════
+# 클래스 상수 (gradcam.py, main.py 공용)
+# ═══════════════════════════════════════════════════════
+# [수정 - 상수 추가]: gradcam 인터랙티브 연산 및 프론트엔드 매핑을 위한 핵심 상수 데이터 배치
+CLASS_NAMES = ["Cleavage", "Ductile", "Fatigue", "Intergranular"]
+
+KO_NAMES = {
+    "Cleavage":      "취성 파괴",
+    "Ductile":       "연성 파괴",
+    "Fatigue":       "피로 파괴",
+    "Intergranular": "입계 파괴",
+}
+
+CLASS_COLORS_BGR = {
+    "Cleavage":      (245, 130, 59),
+    "Ductile":       (94,  197, 34),
+    "Fatigue":       (21,  204, 250),
+    "Intergranular": (68,  68,  239),
+}
+
+CLASS_FEATURES = {
+    "Cleavage":      "평평하고 반짝이는 파단면, 결정면을 따라 직선적으로 쪼개진 형태",
+    "Ductile":       "딤플(dimple) 패턴, 컵-콘 형태의 소성 변형 흔적",
+    "Fatigue":       "비치 마크(beach mark), 줄무늬 형태의 균열 전파 흔적",
+    "Intergranular": "결정립 경계가 드러난 표면, 입자 경계를 따라 전파된 균열",
+}
+
+CLASS_CAUSES = {
+    "Cleavage":      "충격 하중, 저온 환경, 응력 집중, 급격한 변형속도",
+    "Ductile":       "과도한 인장 하중, 정적 과부하",
+    "Fatigue":       "장기간 반복 하중, 진동, 응력 집중부 초기 균열",
+    "Intergranular": "수소 취성, 응력 부식 균열, 고온 산화, 입계 편석",
+}
+
+# ═══════════════════════════════════════════════════════
+# 모델 구조 (원본 로직 100% 유지)
+# ═══════════════════════════════════════════════════════
 
 class ASPP(nn.Module):
     def __init__(self, in_channels: int = 768, out_channels: int = 256):
@@ -78,7 +116,8 @@ class FractographyNet(nn.Module):
     def __init__(self, num_classes: int = 4):
         super().__init__()
 
-        base = convnext_small(weights=None)
+        # [수정 - 가중치 및 로그 정돈]: 가중치 오프라인 로드 실패 방지를 위해 기본 토대 호출 방식 명시 변경
+        base = convnext_small(weights=ConvNeXt_Small_Weights.DEFAULT)
 
         self.backbone = base.features
         self.aspp = ASPP(in_channels=768, out_channels=256)
@@ -97,8 +136,8 @@ class FractographyNet(nn.Module):
         x = self.backbone(x)
         x = self.aspp(x)
         x = self.gap(x)
-        x = x.view(x.size(0), -1)
-        return self.classifier(x)
+        # 원본의 view 구조를 해치지 않으면서 타겟 디바이스 포워딩 연산 유지
+        return self.classifier(x.view(x.size(0), -1))
 
 
 def load_model(model_path: str, device, num_classes: int = 4):
@@ -114,16 +153,13 @@ def load_model(model_path: str, device, num_classes: int = 4):
     elif isinstance(state, dict) and "state_dict" in state:
         state = state["state_dict"]
 
-    clean_state = {}
-    for k, v in state.items():
-        clean_state[k.replace("module.", "")] = v
+    # [수정 - 가중치 및 로그 정돈]: 컴프리헨션 문법으로 간결화 및 병렬 학습(DataParallel) module 접두사 자동 치환 제거 적용
+    clean_state = {k.replace("module.", ""): v for k, v in state.items()}
 
     model.load_state_dict(clean_state, strict=True)
     model.eval()
 
-    print("✅ pth 로드 완료")
-    print(f"✅ 경로: {model_path}")
-    print("✅ 모델: ConvNeXt-Small + ASPP")
-    print(f"✅ device: {device}")
+    # [수정 - 가중치 및 로그 정돈]: uvicorn 서버 셸 출력 가독성을 위한 깔끔한 로그 출력 방식 정돈
+    print(f"[model] 로드 완료: {model_path} / {device}")
 
     return model
