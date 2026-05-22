@@ -2,6 +2,7 @@ import re
 import json
 import ollama
 
+## 파손 유형 설명
 
 FEATURES = {
     "취성 파괴": "균열이 빠르게 진행되고 소성 변형이 거의 없음",
@@ -11,17 +12,17 @@ FEATURES = {
 }
 
 EXPECTED_CAUSE = {
-    "취성 파괴": "충격 하중 또는 급격한 응력 집중",
-    "연성 파괴": "과도한 하중 또는 구조적 결함",
-    "피로 파괴": "장기간 반복 하중에 의한 손상",
-    "입계 파괴": "고온 영향 또는 재료 열화",
+    "취성 파괴": "급격한 응력 집중",
+    "연성 파괴": "과도한 하중",
+    "피로 파괴": "장기간 반복 하중",
+    "입계 파괴": "결정립 경계 약화",
 }
 
 RULE_BASED_EXPLANATIONS = {
     "취성 파괴": "취성 파괴는 소성 변형 없이 균열이 빠르게 진행되는 특징이 있으며, 충격 하중이나 응력 집중에 의해 발생했을 가능성이 있습니다.",
-    "연성 파괴": "연성 파괴는 재료가 늘어나며 큰 소성 변형 후 파단되는 특징이 있으며, 과도한 하중이 원인일 가능성이 있습니다.",
+    "연성 파괴": "연성 파괴는 재료가 큰 소성 변형을 겪은 뒤 파단되는 특징이 있으며, 과도한 하중이나 국부적인 변형 집중과 관련될 가능성이 있습니다.",
     "피로 파괴": "피로 파괴는 반복 하중으로 인해 균열이 점진적으로 성장한 뒤 파손되는 특징이 있으며, 장기간 반복 응력이 원인일 가능성이 있습니다.",
-    "입계 파괴": "입계 파괴는 결정립 경계를 따라 균열이 진행되는 특징이 있으며, 재료 열화나 결정립 경계 약화의 영향일 가능성이 있습니다.",
+    "입계 파괴": "입계 파괴는 결정립 경계를 따라 균열이 진행되는 특징이 있으며, 결정립계 약화나 재료 열화의 영향일 가능성이 있습니다.",
 }
 
 MATERIAL_LABELS = {
@@ -38,6 +39,18 @@ MATERIAL_LABELS = {
     "": "미선택",
 }
 
+MATERIAL_CONTEXT = {
+    "steel": "강은 구조용 재료로 널리 사용되며, 반복 하중 조건에서는 피로 균열 성장 가능성을 고려할 수 있습니다.",
+    "stainless_steel": "스테인리스강은 조건에 따라 결정립계 부식이나 국부적인 열화가 문제가 될 수 있습니다.",
+    "aluminum": "알루미늄은 낮은 밀도와 비교적 높은 연성을 가지며, 반복 하중이나 과하중 조건에서 손상 가능성을 검토할 수 있습니다.",
+    "titanium": "티타늄은 가볍고 강도 대비 성능이 좋은 재료로, 항공·고성능 부품에서 반복 하중에 의한 피로 손상을 고려할 수 있습니다.",
+    "cast_iron": "주철은 흑연 조직이 응력 집중원처럼 작용할 수 있어 취성적 균열 진행 가능성을 고려할 수 있습니다.",
+    "copper": "구리는 연성과 가공성이 좋은 금속이므로, 큰 소성 변형이나 반복 하중 조건에서의 손상 가능성을 함께 검토할 수 있습니다.",
+    "magnesium": "마그네슘 합금은 매우 가벼운 재료이며, 조건에 따라 취성적 파손이나 피로 손상 가능성을 검토할 수 있습니다.",
+    "nickel_alloy": "니켈 합금은 고온 강도와 내식성이 요구되는 부품에 사용되므로, 고온 환경에서의 열화나 반복 하중 손상을 고려할 수 있습니다.",
+    "tool_steel": "공구강은 높은 경도와 내마모성이 요구되는 재료로, 응력 집중 조건에서는 취성적 균열 가능성을 고려할 수 있습니다.",
+}
+
 
 def clean_text(text: str) -> str:
     if not text:
@@ -46,7 +59,6 @@ def clean_text(text: str) -> str:
     text = text.replace("**", "")
     text = text.replace("*", "")
     text = text.replace("#", "")
-
     text = re.sub(r"^\s*\d+\.\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"^\s*[-•]\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"\n+", " ", text)
@@ -85,8 +97,8 @@ def get_confidence_instruction(confidence_percent: float) -> str:
 
     if level == "low":
         return (
-            "신뢰도가 낮으므로 반드시 '가능성 중 하나로 보입니다' 또는 "
-            "'추가 검토가 필요합니다'라는 뉘앙스로 작성한다."
+            "신뢰도가 낮으므로 반드시 '가능성 중 하나로 보입니다', "
+            "'추가 검토가 필요합니다'와 같은 불확실한 표현을 사용한다."
         )
 
     if level == "medium":
@@ -107,35 +119,18 @@ def get_rule_based_analysis(prediction: str, material: str):
     if prediction == "피로 파괴":
         rules.append("반복 하중에 의해 균열이 점진적으로 성장했을 가능성이 있습니다.")
     elif prediction == "취성 파괴":
-        rules.append("재료가 거의 변형 없이 급격히 파손되었을 가능성이 있습니다.")
+        rules.append("소성 변형이 거의 없이 균열이 빠르게 진행되었을 가능성이 있습니다.")
     elif prediction == "연성 파괴":
-        rules.append("재료가 큰 변형을 겪은 후 파손되었을 가능성이 있습니다.")
+        rules.append("재료가 큰 소성 변형을 겪은 후 파손되었을 가능성이 있습니다.")
     elif prediction == "입계 파괴":
         rules.append("균열이 결정립 경계를 따라 진행되었을 가능성이 있습니다.")
 
-    if material == "cast_iron":
-        rules.append("주철은 상대적으로 취성적인 거동을 보일 수 있어 급격한 균열 진행과 관련될 수 있습니다.")
-
-    if material == "stainless_steel":
-        rules.append("스테인리스강은 조건에 따라 결정립계 손상이나 국부적인 재료 열화와 관련될 수 있습니다.")
-
-    if material == "aluminum":
-        rules.append("알루미늄은 가벼운 금속 재료로, 반복 하중이나 과하중 조건에서 손상 양상이 나타날 수 있습니다.")
-
-    if material == "titanium":
-        rules.append("티타늄은 강도 대비 가벼운 특성이 있어 반복 하중이 작용하는 부품에서 피로 손상을 고려할 수 있습니다.")
-
-    if material == "copper":
-        rules.append("구리는 비교적 연성이 큰 재료이므로 큰 변형을 동반한 파손 가능성을 함께 고려할 수 있습니다.")
-
-    if material == "magnesium":
-        rules.append("마그네슘 합금은 가볍지만 조건에 따라 취성적인 파손 양상이 나타날 수 있습니다.")
-
-    if material == "nickel_alloy":
-        rules.append("니켈 합금은 고온 부품에 자주 사용되므로 재료 열화나 반복 하중에 의한 손상을 고려할 수 있습니다.")
-
-    if material == "tool_steel":
-        rules.append("공구강은 높은 경도 때문에 응력 집중 조건에서 취성적 균열 진행 가능성을 고려할 수 있습니다.")
+    material_context = MATERIAL_CONTEXT.get(material)
+    if material_context:
+        rules.append(
+            "재질 정보는 보조 참고 정보로만 사용해야 하며, 이미지에서 직접 확인되지 않는 재질 특성은 단정하지 않습니다."
+        )
+        rules.append(material_context)
 
     return rules
 
@@ -191,7 +186,9 @@ CNN 분석 결과:
 - 확정 표현을 사용하지 않는다.
 - "발생했습니다", "원인입니다", "확실합니다" 같은 단정 표현은 금지한다.
 - "가능성이 있습니다", "추정됩니다", "보입니다" 같은 표현을 사용한다.
-- 재질을 단순히 나열하지 않는다.
+- 재질의 일반적인 특성을 과도하게 끌어오지 않는다.
+- 재질 정보는 보조 설명으로만 사용하고, 파손 유형과 직접 연결되지 않으면 언급하지 않는다.
+- 이미지에서 직접 확인되지 않는 재질 특성, 사용 환경, 열처리 상태, 부식 상태는 단정하지 않는다.
 - 재질이 정보 없음 또는 미선택이면 재질을 언급하지 않는다.
 - 같은 의미를 반복하지 않는다.
 - 설명은 너무 길지 않게 작성한다.
@@ -207,30 +204,30 @@ CNN 분석 결과:
 
 def validate_explanation(prediction: str, text: str) -> str:
     invalid_keywords = {
-        "연성 파괴": ["반복 하중"],
-        "취성 파괴": ["늘어난 흔적"],
-        "피로 파괴": ["한 번의 큰 하중"],
-        "입계 파괴": ["반복 하중"],
+        "연성 파괴": ["결정립 경계", "급격히 진행"],
+        "취성 파괴": ["큰 소성 변형", "늘어난"],
+        "피로 파괴": ["한 번의 큰 하중", "급격한 파손"],
+        "입계 파괴": ["큰 소성 변형"],
     }
 
     banned = invalid_keywords.get(prediction, [])
 
     for word in banned:
         if word in text:
-            print(f"[validate] 금지어 감지: {word}")
+            print(f"[validate] 부적절 표현 감지: {word}")
             return RULE_BASED_EXPLANATIONS[prediction]
 
     return text
 
 
 def validate_confidence_tone(confidence_percent: float, text: str) -> str:
-    if confidence_percent >= 40:
-        return text
-
     uncertainty_words = ["가능성", "추정", "보입니다", "검토"]
 
     if not any(word in text for word in uncertainty_words):
-        text += " 다만 신뢰도가 낮아 추가 이미지 또는 전문가 검토가 필요합니다."
+        text += " 다만 실제 판정에는 추가 검토가 필요할 수 있습니다."
+
+    if confidence_percent < 40 and "추가" not in text:
+        text += " 신뢰도가 낮아 추가 이미지 또는 전문가 검토가 필요합니다."
 
     return text
 
@@ -274,7 +271,8 @@ def generate_llm_analysis(
                     "content": (
                         "너는 파손 단면 분석 설명 생성기다. "
                         "반드시 한국어 JSON만 출력해야 한다. "
-                        "확정 표현은 금지하고 추정형 표현만 사용한다."
+                        "확정 표현은 금지하고 추정형 표현만 사용한다. "
+                        "재질 특성은 참고 정보로만 사용하고 과도하게 단정하지 않는다."
                     ),
                 },
                 {
@@ -283,8 +281,8 @@ def generate_llm_analysis(
                 },
             ],
             options={
-                "temperature": 0.2,
-                "top_p": 0.8,
+                "temperature": 0.15,
+                "top_p": 0.75,
             },
         )
 
@@ -325,46 +323,87 @@ def generate_llm_analysis(
     }
 
 
-def generate_compare_analysis(items: list) -> str:
-    """여러 분석 결과를 비교하는 LLM 설명 생성."""
+## 분석 결과 비교 설명
+def generate_compare_analysis(compare_items: list):
+    summary_lines = []
 
-    # 비교 텍스트 구성
-    items_text = ""
-    for i, item in enumerate(items, 1):
-        prediction     = item.get("display_prediction") or item.get("prediction", "알 수 없음")
-        confidence     = item.get("confidence", "—")
-        material       = item.get("material", "")
-        feature        = item.get("feature", "")
-        expected_cause = item.get("expected_cause", "")
-        items_text += (
-            f"\n[결과 {i}]\n"
-            f"- 파손 유형: {prediction}\n"
-            f"- 신뢰도: {confidence}\n"
-            f"- 재질: {material or '미선택'}\n"
-            f"- 주요 특징: {feature}\n"
-            f"- 예상 원인: {expected_cause}\n"
+    for idx, item in enumerate(compare_items, start=1):
+        summary_lines.append(
+            f"""
+비교 {idx}
+- 파손 유형: {item.get("prediction", "-")}
+- 표시 유형: {item.get("display_prediction", item.get("prediction", "-"))}
+- 신뢰도: {item.get("confidence", "-")}
+- 재질: {MATERIAL_LABELS.get(item.get("material", ""), item.get("material", "-"))}
+- 혼합 여부: {"혼합 가능성 있음" if item.get("is_mixed") else "단일 유형 가능성 높음"}
+- 주요 특징: {item.get("feature", "-")}
+- 예상 원인: {item.get("expected_cause", "-")}
+- 설명: {item.get("explanation", "-")}
+"""
         )
 
     prompt = f"""
 너는 파손단면 분석 결과를 비교 설명하는 도우미다.
-아래는 여러 개의 파손단면 이미지 분석 결과다.
+아래 여러 분석 결과를 단순 나열하지 말고, 사용자가 한눈에 이해할 수 있도록 비교하라.
 
-{items_text}
+분석 결과 목록:
+{chr(10).join(summary_lines)}
 
-위 결과들을 비교하여 3~5문장으로 요약 설명해라.
-- 파손 유형이 같은지 다른지 언급한다.
-- 신뢰도 차이가 있으면 언급한다.
-- 재질이 다르면 그 영향을 간략히 언급한다.
-- 확정 표현 금지. "가능성이 있습니다", "추정됩니다" 형태로 작성한다.
-- 반드시 한국어로만 작성한다.
-- JSON 없이 평문으로만 출력한다.
+작성해야 할 내용:
+1. summary
+   - 두 결과를 각각 나열하지 말고, 비교했을 때 가장 큰 차이 1가지만 결론형으로 작성한다.
+   - "비교 1은", "비교 2는" 표현을 사용하지 않는다.
+   - 신뢰도 수치나 우선 검토 여부는 포함하지 않는다.
+   - 1문장으로 작성한다.
+
+2. mechanism_compare_1
+   - 비교 1의 파손 메커니즘을 짧게 설명한다.
+   - 비교 2와 대비되는 특징을 중심으로 작성한다.
+
+3. mechanism_compare_2
+   - 비교 2의 파손 메커니즘을 짧게 설명한다.
+   - 비교 1과 대비되는 특징을 중심으로 작성한다.
+
+4. confidence_opinion
+   - 두 결과의 신뢰도 차이를 비교한다.
+   - 어떤 결과를 더 우선적으로 참고할 수 있는지 설명한다.
+   - 신뢰도가 낮은 결과는 추가 검토가 필요하다고 설명한다.
+
+5. final_opinion
+   - 사용자가 최종적으로 어떻게 해석하면 좋을지 1~2문장으로 작성한다.
+   - summary와 같은 말을 반복하지 않는다.
+   - 단정하지 말고 추가 검토 필요성을 포함한다.
+
+중요 규칙:
+- 반드시 한국어로 작성한다.
+- JSON 이외의 문장은 출력하지 않는다.
+- 단순히 "비교 1은 ~, 비교 2는 ~" 형식으로 나열하지 않는다.
+- summary에는 신뢰도 관련 내용을 넣지 않는다.
+- confidence_opinion에서만 신뢰도 차이를 설명한다.
+- final_opinion은 짧게 작성하고, 전체 해석 시 주의할 점만 말한다.
+- "반면", "상대적으로", "더 강하게", "차이를 보입니다" 같은 비교 표현을 사용한다.
+- 확정 표현은 피하고 "가능성이 있습니다", "해석할 수 있습니다", "검토가 필요합니다" 형태로 작성한다.
+- 너무 길게 쓰지 않는다.
+- 각 항목은 1~3문장 이내로 작성한다.
+
+반드시 아래 JSON 형식으로만 출력하라.
+
+{{
+  "summary": "핵심 요약",
+  "mechanism_compare_1": "비교 1의 파손 메커니즘 설명",
+  "mechanism_compare_2": "비교 2의 파손 메커니즘 설명",
+  "confidence_opinion": "신뢰도 차이와 해석 주의점",
+  "final_opinion": "최종 해석"
+}}
 """
 
-    fallback = (
-        "선택한 분석 결과들은 파손 유형, 신뢰도, 재질에서 차이가 있습니다. "
-        "신뢰도가 낮은 결과는 추가 이미지나 전문가 검토가 필요할 수 있으며, "
-        "각 결과는 단일 판단보다 비교 관점에서 함께 해석하는 것이 좋습니다."
-    )
+    fallback_result = {
+        "summary": "두 결과는 파손이 진행된 방식에서 차이를 보이며, 하나는 순간적인 응력 집중, 다른 하나는 반복 하중에 의한 점진적 균열 성장 가능성을 더 강하게 보여줍니다.",
+        "mechanism_compare_1": "비교 1은 순간적인 응력 집중이나 국부적인 균열 진행과 관련된 특징으로 해석될 수 있습니다.",
+        "mechanism_compare_2": "비교 2는 반복 하중이나 점진적인 균열 성장과 관련된 특징으로 해석될 수 있습니다.",
+        "confidence_opinion": "신뢰도가 더 높은 결과는 상대적으로 우선 참고할 수 있지만, 신뢰도가 낮은 결과는 추가 검토가 필요할 수 있습니다.",
+        "final_opinion": "두 결과는 단일 판단보다 비교 관점에서 함께 확인하는 것이 좋습니다. 실제 판정에는 추가 이미지나 전문가 검토가 필요할 수 있습니다.",
+    }
 
     try:
         response = ollama.chat(
@@ -373,17 +412,59 @@ def generate_compare_analysis(items: list) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "너는 파손단면 분석 비교 설명 생성기다. "
-                        "반드시 한국어 평문으로만 출력한다."
+                        "너는 파손단면 분석 결과 비교 설명 생성기다. "
+                        "반드시 한국어 JSON만 출력한다. "
+                        "결과를 나열하지 말고 차이점 중심으로 비교한다. "
+                        "신뢰도 내용은 confidence_opinion에서만 설명한다. "
+                        "확정 표현은 피하고 추정형 표현을 사용한다."
                     ),
                 },
-                {"role": "user", "content": prompt},
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
             ],
-            options={"temperature": 0.2, "top_p": 0.8},
+            options={
+                "temperature": 0.2,
+                "top_p": 0.8,
+            },
         )
-        result = clean_text(response["message"]["content"].strip())
-        return result if result else fallback
+
+        raw_response = response["message"]["content"].strip()
+        print("LLM 비교 원본 응답:", raw_response)
+
+        parsed = parse_llm_json(raw_response)
+
+        if parsed:
+            return {
+                "summary": clean_text(
+                    parsed.get("summary", fallback_result["summary"])
+                ),
+                "mechanism_compare_1": clean_text(
+                    parsed.get(
+                        "mechanism_compare_1",
+                        fallback_result["mechanism_compare_1"],
+                    )
+                ),
+                "mechanism_compare_2": clean_text(
+                    parsed.get(
+                        "mechanism_compare_2",
+                        fallback_result["mechanism_compare_2"],
+                    )
+                ),
+                "confidence_opinion": clean_text(
+                    parsed.get(
+                        "confidence_opinion",
+                        fallback_result["confidence_opinion"],
+                    )
+                ),
+                "final_opinion": clean_text(
+                    parsed.get("final_opinion", fallback_result["final_opinion"])
+                ),
+            }
+
+        return fallback_result
 
     except Exception as e:
-        print(f"Ollama 비교 오류: {e}")
-        return fallback
+        print(f"LLM 비교 분석 오류: {e}")
+        return fallback_result
