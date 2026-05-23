@@ -1,5 +1,11 @@
+<<<<<<< HEAD
 import io
 import os
+=======
+import io, os
+import base64
+from typing import Optional
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
 
 import cv2
 import numpy as np
@@ -238,6 +244,19 @@ def build_layer_rgba(
     return canvas
 
 
+# [신규 - 토글 재계산 기능]: 클래스별 이진 마스크를 흑백 PNG(base64)로 인코딩
+# 프론트가 활성 클래스 조합에 따라 단독/겹침을 즉석 재계산할 수 있도록 함.
+# 흑백 1채널 PNG라 컬러 PNG 대비 용량이 1/3~1/5로 줄어 localStorage 부담이 적음.
+def mask_to_b64_png(mask: np.ndarray) -> str:
+    """이진 마스크(0/255 uint8 2D 배열) → 흑백 PNG base64 data URL."""
+    # PIL의 "L" 모드(8-bit grayscale)로 저장 → PNG는 자동으로 1채널 최적 압축
+    pil = Image.fromarray(mask.astype(np.uint8), mode="L")
+    buf = io.BytesIO()
+    pil.save(buf, format="PNG", optimize=True)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return f"data:image/png;base64,{b64}"
+
+
 # ═══════════════════════════════════════════════════════
 # 서버 동작 확인용 API
 # ═══════════════════════════════════════════════════════
@@ -347,9 +366,27 @@ async def analyze_fracture(
 
         highlighted_types = [top1_label]
 
-        display_prediction = top1_label
+<<<<<<< HEAD
+=======
+    # 클래스별 RGBA 레이어 생성 루프 (기존 — 옛 기록 호환 + 폴백용 유지)
+    gradcam_layers = {}
+    for name in CLASS_NAMES:
+        s = solo_masks.get(name,    np.zeros((H, W), dtype=np.uint8))
+        o = overlap_masks.get(name, np.zeros((H, W), dtype=np.uint8))
+        gradcam_layers[name] = to_b64(build_layer_rgba(img_rgb, name, s, o))
 
-    confidence = f"{top1_percent:.1f}%"
+    # [신규 - 토글 재계산 기능]: 클래스별 이진 마스크를 흑백 PNG로 응답에 추가
+    # 프론트는 이 마스크를 읽어 활성 클래스 조합에 따라 solo/overlap을 즉석 재계산하고
+    # canvas의 setLineDash로 실선/점선을 직접 그린다. 색상은 프론트의 CLASS_COLORS 상수 사용.
+    # masks_dict에 없는 클래스(신뢰도 미달)는 빈 마스크로 보내 일관성 유지.
+    gradcam_masks = {}
+    for name in CLASS_NAMES:
+        mask = masks_dict.get(name, np.zeros((H, W), dtype=np.uint8))
+        gradcam_masks[name] = mask_to_b64_png(mask)
+
+    base_image_b64   = to_b64(img_rgb)
+    gradcam_contours = extract_contours_json(masks_dict, (H, W))
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
 
     # ═══════════════════════════════════
     # 신뢰도 상태 분류
@@ -404,9 +441,35 @@ async def analyze_fracture(
         material=material,
     )
 
+<<<<<<< HEAD
     # ═══════════════════════════════════
     # Grad-CAM 초기값
     # ═══════════════════════════════════
+=======
+    return {
+        "prediction":         pred_name,
+        "display_prediction": f"{KO_NAMES[pred_name]} ({pred_name})",
+        "confidence":         f"{pred_prob:.1%}",
+        "confidence_status":  conf_status,
+        "confidence_message": llm_result["explanation"],  # [수정 - LLM 연동]: 동적 LLM 분석 설명문 매핑
+        "is_mixed":           is_mixed,
+        "top1_type":          KO_NAMES[top1_name],
+        "top2_type":          KO_NAMES[top2_name],
+        "mixed_gap":          f"{gap:.1%}p",
+        "highlighted_types":  highlighted,
+        "similarities":       similarities,
+        "feature":            llm_result["feature"],          # [수정 - LLM 연동]: 하드코딩 맵 대신 LLM 추출 정보 매핑
+        "expected_cause":     llm_result["expected_cause"],   # [수정 - LLM 연동]: 하드코딩 맵 대신 LLM 추출 정보 매핑
+        "explanation":        llm_result["explanation"],      # [수정 - LLM 연동]: 하드코딩 맵 대신 LLM 추출 정보 매핑
+        "material":           material,
+        "gradcam_image":      gradcam_b64,
+        "gradcam_layers":     gradcam_layers,
+        "gradcam_masks":      gradcam_masks,   # [신규 - 토글 재계산 기능]: 클래스별 흑백 마스크 PNG
+        "base_image":         base_image_b64,
+        "gradcam_contours":   gradcam_contours,
+        "llm_analysis":       llm_result,
+    }
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
 
     gradcam_image = None
     gradcam_layers = {}
@@ -625,6 +688,7 @@ async def compare_analysis(payload: dict):
 if __name__ == "__main__":
 
     import uvicorn
+<<<<<<< HEAD
 
     uvicorn.run(
         "main:app",
@@ -632,3 +696,6 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
     )
+=======
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)

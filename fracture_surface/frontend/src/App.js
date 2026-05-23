@@ -1,3 +1,4 @@
+//App.js
 import { useState, useRef, useEffect } from "react";
 import FlipCard from "./components/FlipCard";
 
@@ -59,21 +60,203 @@ const layout = {
   select: "p-3 border rounded-xl bg-white",
 };
 
+<<<<<<< HEAD
 function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }) {
   const canvasRef = useRef(null);
   const baseImgRef = useRef(null);
   const layerImgsRef = useRef({});
 
   const allClasses = Object.keys(result.gradcam_layers || {});
+=======
+// ═══════════════════════════════════════════════════════════════
+// [신규 - 토글 재계산 기능] 마스크 기반 동적 렌더링 유틸
+// ═══════════════════════════════════════════════════════════════
+
+// 이미지 로드를 Promise로 감싸는 헬퍼
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+// PNG data URL → Uint8Array(0/255) 이진 마스크로 디코딩
+// 흑백 PNG이지만 브라우저는 RGBA로 읽으므로 R 채널만 사용해서 임계 처리
+function decodeMaskFromImage(img, W, H) {
+  const c = document.createElement("canvas");
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(img, 0, 0, W, H);
+  const { data } = ctx.getImageData(0, 0, W, H); // RGBA 4채널
+  const mask = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    mask[i] = data[i * 4] > 127 ? 255 : 0; // R 채널
+  }
+  return mask;
+}
+
+// 활성 클래스 조합으로 solo/overlap 재계산
+// active: ["Cleavage", "Fatigue"] 식의 영문 클래스명 배열
+// masks: { Cleavage: Uint8Array, ... }
+function computeSoloOverlap(masks, active, W, H) {
+  const N = W * H;
+  const count = new Int32Array(N);
+  for (const name of active) {
+    const m = masks[name];
+    if (!m) continue;
+    for (let i = 0; i < N; i++) if (m[i] > 0) count[i]++;
+  }
+  const out = {};
+  for (const name of active) {
+    const m = masks[name];
+    if (!m) continue;
+    const solo = new Uint8Array(N);
+    const overlap = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      if (m[i] > 0) {
+        if (count[i] === 1) solo[i] = 255;
+        else if (count[i] >= 2) overlap[i] = 255;
+      }
+    }
+    out[name] = { solo, overlap };
+  }
+  return out;
+}
+
+// 마칭 스퀘어: 이진 마스크 → 선분 배열
+function maskToSegments(mask, W, H) {
+  const segments = [];
+  const get = (x, y) =>
+    x < 0 || y < 0 || x >= W || y >= H ? 0 : mask[y * W + x] > 0 ? 1 : 0;
+
+  for (let y = -1; y < H; y++) {
+    for (let x = -1; x < W; x++) {
+      const tl = get(x, y);
+      const tr = get(x + 1, y);
+      const bl = get(x, y + 1);
+      const br = get(x + 1, y + 1);
+      const code = (tl << 3) | (tr << 2) | (br << 1) | bl;
+      const top = { x: x + 1.0, y: y + 0.5 };
+      const right = { x: x + 1.5, y: y + 1.0 };
+      const bottom = { x: x + 1.0, y: y + 1.5 };
+      const left = { x: x + 0.5, y: y + 1.0 };
+
+      switch (code) {
+        case 1:  segments.push([left, bottom]); break;
+        case 2:  segments.push([bottom, right]); break;
+        case 3:  segments.push([left, right]); break;
+        case 4:  segments.push([top, right]); break;
+        case 5:  segments.push([left, top]); segments.push([bottom, right]); break;
+        case 6:  segments.push([top, bottom]); break;
+        case 7:  segments.push([left, top]); break;
+        case 8:  segments.push([top, left]); break;
+        case 9:  segments.push([top, bottom]); break;
+        case 10: segments.push([top, right]); segments.push([left, bottom]); break;
+        case 11: segments.push([top, right]); break;
+        case 12: segments.push([left, right]); break;
+        case 13: segments.push([bottom, right]); break;
+        case 14: segments.push([left, bottom]); break;
+        default: break;
+      }
+    }
+  }
+  return segments;
+}
+
+// 선분 배열 → 연결된 폴리라인 배열
+function segmentsToPolylines(segments) {
+  const key = (p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+  const map = new Map();
+  segments.forEach((seg, i) => {
+    const k1 = key(seg[0]);
+    const k2 = key(seg[1]);
+    if (!map.has(k1)) map.set(k1, []);
+    if (!map.has(k2)) map.set(k2, []);
+    map.get(k1).push(i);
+    map.get(k2).push(i);
+  });
+
+  const used = new Array(segments.length).fill(false);
+  const polylines = [];
+
+  for (let i = 0; i < segments.length; i++) {
+    if (used[i]) continue;
+    used[i] = true;
+    const poly = [segments[i][0], segments[i][1]];
+
+    let extended = true;
+    while (extended) {
+      extended = false;
+      const tail = poly[poly.length - 1];
+      const cands = map.get(key(tail)) || [];
+      for (const ci of cands) {
+        if (used[ci]) continue;
+        const seg = segments[ci];
+        if (key(seg[0]) === key(tail)) {
+          poly.push(seg[1]); used[ci] = true; extended = true; break;
+        } else if (key(seg[1]) === key(tail)) {
+          poly.push(seg[0]); used[ci] = true; extended = true; break;
+        }
+      }
+    }
+    polylines.push(poly);
+  }
+  return polylines;
+}
+
+// 폴리라인 배열을 canvas에 실선/점선으로 그리기
+function drawPolylines(ctx, polylines, color, { dashed = false, lineWidth = 3 } = {}) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  if (dashed) ctx.setLineDash([10, 8]);
+  else ctx.setLineDash([]);
+  for (const poly of polylines) {
+    if (poly.length < 2) continue;
+    ctx.beginPath();
+    ctx.moveTo(poly[0].x, poly[0].y);
+    for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GradcamView — 두 가지 렌더링 모드 분기
+// ═══════════════════════════════════════════════════════════════
+// 모드 A (NEW): result.gradcam_masks 있음 → 마스크 기반 동적 재계산
+// 모드 B (OLD): result.gradcam_masks 없음 → 기존 gradcam_layers 합성 (옛 기록 호환)
+function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }) {
+  const canvasRef = useRef(null);
+  const baseImgRef = useRef(null);
+
+  // 모드 A용: 디코딩된 이진 마스크 보관
+  const masksRef = useRef({}); // { Cleavage: Uint8Array, ... }
+  // 모드 B용: 컬러 레이어 이미지 보관
+  const layerImgsRef = useRef({});
+
+  const hasMasks = !!result.gradcam_masks; // 새 응답인지 옛 응답인지
+  const sourceObj = hasMasks ? result.gradcam_masks : (result.gradcam_layers || {});
+
+  // 토글 칩은 contour가 실제로 존재하는 클래스만 표시 (기존 동작 유지)
+  const allClasses = Object.keys(sourceObj);
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
   const activeClasses = allClasses.filter((name) => {
     const contours = result.gradcam_contours?.[name];
     return contours && contours.length > 0;
   });
 
+  // 토글 상태는 컴포넌트 내부에서만 — 모달이 닫히거나 result가 바뀌면 리셋
   const [checked, setChecked] = useState(() =>
     Object.fromEntries(allClasses.map((name) => [name, true]))
   );
 
+<<<<<<< HEAD
   useEffect(() => {
     const loadImg = (src) =>
       new Promise((resolve) => {
@@ -107,12 +290,112 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(base, 0, 0);
 
+=======
+  // result가 바뀌면 토글 상태도 리셋 (다른 분석 결과 클릭 시)
+  useEffect(() => {
+    setChecked(Object.fromEntries(allClasses.map((n) => [n, true])));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result]);
+
+  // 초기 로드: base 이미지 + (모드 A) 마스크들 또는 (모드 B) 컬러 레이어들
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const base = await loadImage(result.base_image);
+      if (cancelled) return;
+      baseImgRef.current = base;
+      const W = base.naturalWidth;
+      const H = base.naturalHeight;
+
+      if (hasMasks) {
+        // 모드 A: 흑백 마스크를 Uint8Array로 디코딩
+        masksRef.current = {};
+        for (const name of allClasses) {
+          const src = sourceObj[name];
+          if (!src) continue;
+          const img = await loadImage(src);
+          if (cancelled) return;
+          masksRef.current[name] = decodeMaskFromImage(img, W, H);
+        }
+      } else {
+        // 모드 B: 컬러 레이어 이미지 그대로 보관
+        layerImgsRef.current = {};
+        for (const name of allClasses) {
+          const src = sourceObj[name];
+          if (!src) continue;
+          layerImgsRef.current[name] = await loadImage(src);
+        }
+      }
+
+      redraw();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result]);
+
+  // checked 변경 시 다시 그리기
+  useEffect(() => {
+    redraw();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checked]);
+
+  function redraw() {
+    const canvas = canvasRef.current;
+    const base = baseImgRef.current;
+    if (!canvas || !base) return;
+
+    const W = base.naturalWidth;
+    const H = base.naturalHeight;
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(base, 0, 0);
+
+    if (hasMasks) {
+      // 모드 A: 활성 클래스 조합으로 solo/overlap 재계산 → 윤곽선 그리기
+      const active = allClasses.filter((n) => checked[n]);
+      if (active.length === 0) return;
+
+      const masks = {};
+      for (const name of active) {
+        if (masksRef.current[name]) masks[name] = masksRef.current[name];
+      }
+      const so = computeSoloOverlap(masks, active, W, H);
+
+      // 1) solo는 실선
+      for (const name of active) {
+        const data = so[name];
+        if (!data) continue;
+        const segs = maskToSegments(data.solo, W, H);
+        if (segs.length === 0) continue;
+        const polys = segmentsToPolylines(segs);
+        drawPolylines(ctx, polys, CLASS_COLORS[name], { dashed: false, lineWidth: 3 });
+      }
+      // 2) overlap은 점선
+      for (const name of active) {
+        const data = so[name];
+        if (!data) continue;
+        const segs = maskToSegments(data.overlap, W, H);
+        if (segs.length === 0) continue;
+        const polys = segmentsToPolylines(segs);
+        drawPolylines(ctx, polys, CLASS_COLORS[name], { dashed: true, lineWidth: 3 });
+      }
+    } else {
+      // 모드 B: 기존 동작 — 컬러 레이어를 그대로 합성
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
       for (const name of allClasses) {
+        if (!checked[name]) continue;
         const layerImg = layerImgsRef.current[name];
         if (layerImg) {
           ctx.drawImage(layerImg, 0, 0);
         }
       }
+<<<<<<< HEAD
     };
 
     draw();
@@ -138,8 +421,10 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
       if (layerImg) {
         ctx.drawImage(layerImg, 0, 0);
       }
+=======
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
     }
-  }, [checked, allClasses]);
+  }
 
   const toggle = (name) => {
     setChecked((prev) => ({
@@ -153,13 +438,13 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
       {activeClasses.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-3">
           {activeClasses.map((name) => {
-            const koName = Object.keys(EN_NAMES).find(
-              (key) => EN_NAMES[key] === name
-            );
+<<<<<<< HEAD
 
+=======
+            const koName = Object.keys(EN_NAMES).find((k) => EN_NAMES[k] === name);
             const color = CLASS_COLORS[name];
             const on = checked[name];
-
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
             return (
               <button
                 key={name}
@@ -332,12 +617,22 @@ export default function App() {
   };
 
   const saveHistory = (data, thumbnail) => {
+    // [신규 - 토글 재계산 기능] saveHistory 슬림화:
+    // gradcam_masks(흑백)만 저장하고 gradcam_layers(컬러)는 버린다.
+    // 새 GradcamView는 항상 gradcam_masks를 우선 사용하므로 컬러 PNG는 죽은 무게.
+    // 단 옛 응답(gradcam_masks 없음)이라면 폴백을 위해 gradcam_layers는 유지.
+    const hasNewMasks = !!data.gradcam_masks;
     const historyResult = {
       ...data,
+<<<<<<< HEAD
       gradcam_image: null,
       gradcam_layers: null,
       base_image: null,
       gradcam_contours: null,
+=======
+      gradcam_image: null, // 디버깅용 합성본 — 항상 제거 (기존 동작 유지)
+      gradcam_layers: hasNewMasks ? null : data.gradcam_layers, // 새 응답이면 컬러 버림
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
     };
 
     const newItem = {
@@ -356,7 +651,21 @@ export default function App() {
     } catch (err) {
       console.error("기록 저장 실패:", err);
 
+<<<<<<< HEAD
       const lighterHistory = [newItem, ...history].slice(0, 5);
+=======
+      const lighterHistory = [newItem, ...history]
+        .slice(0, 5)
+        .map((item) => ({
+          ...item,
+          result: {
+            ...item.result,
+            gradcam_image: null,
+            gradcam_layers: null, // 용량 초과 시 컬러 레이어도 제거
+          },
+        }));
+
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
       setHistory(lighterHistory);
       localStorage.setItem("analysisHistory", JSON.stringify(lighterHistory));
 
@@ -793,7 +1102,11 @@ export default function App() {
                         Grad-CAM++ 영역 시각화
                       </h4>
 
+<<<<<<< HEAD
                       {(result.gradcam_layers || result.gradcam_image) && (
+=======
+                      {(result.gradcam_masks || result.gradcam_layers) && (
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
                         <button
                           onClick={() => setShowGradcamModal(true)}
                           className="text-xs px-3 py-1 rounded-full bg-slate-900 text-white hover:bg-slate-700 transition"
@@ -803,6 +1116,7 @@ export default function App() {
                       )}
                     </div>
 
+<<<<<<< HEAD
                     {result.gradcam_layers && result.base_image ? (
                       <GradcamView
                         result={result}
@@ -821,6 +1135,11 @@ export default function App() {
                           className="w-full h-full object-contain"
                         />
                       </button>
+=======
+                    {/* [신규 - 토글 재계산 기능] gradcam_masks 또는 gradcam_layers 중 어느 쪽이 있어도 GradcamView가 알아서 처리 */}
+                    {(result.gradcam_masks || result.gradcam_layers) ? (
+                      <GradcamView result={result} chipSize="text-xs" canvasClass="h-[260px]" />
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
                     ) : (
                       <div className="w-full h-[260px] rounded-xl border bg-white flex items-center justify-center">
                         <p className="text-slate-500 font-medium">
@@ -828,6 +1147,10 @@ export default function App() {
                         </p>
                       </div>
                     )}
+<<<<<<< HEAD
+=======
+                    {/* [신규 끝] */}
+>>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
                   </div>
                 </div>
               </div>
