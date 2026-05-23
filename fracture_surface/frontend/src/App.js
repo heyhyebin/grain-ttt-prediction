@@ -4,6 +4,7 @@ import FlipCard from "./components/FlipCard";
 
 const FRACTURE_TYPES = ["취성 파괴", "연성 파괴", "피로 파괴", "입계 파괴"];
 
+// [수정 - 한글-영문 클래스명 매핑 및 토글 칩 색상 상수 추가]
 const EN_NAMES = {
   "취성 파괴": "Cleavage",
   "연성 파괴": "Ductile",
@@ -12,11 +13,12 @@ const EN_NAMES = {
 };
 
 const CLASS_COLORS = {
-  Cleavage: "#f59b3b",
-  Ductile: "#22c55e",
-  Fatigue: "#15ccfa",
+  Cleavage:      "#f59b3b",
+  Ductile:       "#22c55e",
+  Fatigue:       "#15ccfa",
   Intergranular: "#4444ef",
 };
+// [수정 끝]
 
 const DEFAULT_SIMILARITIES = {
   "취성 파괴": { sim: "—", best: false, mixed: false },
@@ -60,14 +62,6 @@ const layout = {
   select: "p-3 border rounded-xl bg-white",
 };
 
-<<<<<<< HEAD
-function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }) {
-  const canvasRef = useRef(null);
-  const baseImgRef = useRef(null);
-  const layerImgsRef = useRef({});
-
-  const allClasses = Object.keys(result.gradcam_layers || {});
-=======
 // ═══════════════════════════════════════════════════════════════
 // [신규 - 토글 재계산 기능] 마스크 기반 동적 렌더링 유틸
 // ═══════════════════════════════════════════════════════════════
@@ -245,7 +239,6 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
 
   // 토글 칩은 contour가 실제로 존재하는 클래스만 표시 (기존 동작 유지)
   const allClasses = Object.keys(sourceObj);
->>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
   const activeClasses = allClasses.filter((name) => {
     const contours = result.gradcam_contours?.[name];
     return contours && contours.length > 0;
@@ -253,44 +246,9 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
 
   // 토글 상태는 컴포넌트 내부에서만 — 모달이 닫히거나 result가 바뀌면 리셋
   const [checked, setChecked] = useState(() =>
-    Object.fromEntries(allClasses.map((name) => [name, true]))
+    Object.fromEntries(allClasses.map((n) => [n, true]))
   );
 
-<<<<<<< HEAD
-  useEffect(() => {
-    const loadImg = (src) =>
-      new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.src = src;
-      });
-
-    const draw = async () => {
-      if (!result.base_image) return;
-
-      baseImgRef.current = await loadImg(result.base_image);
-      layerImgsRef.current = {};
-
-      for (const name of allClasses) {
-        const src = result.gradcam_layers?.[name];
-        if (src) {
-          layerImgsRef.current[name] = await loadImg(src);
-        }
-      }
-
-      const canvas = canvasRef.current;
-      const base = baseImgRef.current;
-
-      if (!canvas || !base) return;
-
-      canvas.width = base.naturalWidth;
-      canvas.height = base.naturalHeight;
-
-      const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(base, 0, 0);
-
-=======
   // result가 바뀌면 토글 상태도 리셋 (다른 분석 결과 클릭 시)
   useEffect(() => {
     setChecked(Object.fromEntries(allClasses.map((n) => [n, true])));
@@ -387,64 +345,25 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
       }
     } else {
       // 모드 B: 기존 동작 — 컬러 레이어를 그대로 합성
->>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
       for (const name of allClasses) {
         if (!checked[name]) continue;
         const layerImg = layerImgsRef.current[name];
-        if (layerImg) {
-          ctx.drawImage(layerImg, 0, 0);
-        }
+        if (layerImg) ctx.drawImage(layerImg, 0, 0);
       }
-<<<<<<< HEAD
-    };
-
-    draw();
-  }, [result]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const base = baseImgRef.current;
-
-    if (!canvas || !base || base.naturalWidth === 0) return;
-
-    canvas.width = base.naturalWidth;
-    canvas.height = base.naturalHeight;
-
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(base, 0, 0);
-
-    for (const name of allClasses) {
-      if (!checked[name]) continue;
-
-      const layerImg = layerImgsRef.current[name];
-      if (layerImg) {
-        ctx.drawImage(layerImg, 0, 0);
-      }
-=======
->>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
     }
   }
 
-  const toggle = (name) => {
-    setChecked((prev) => ({
-      ...prev,
-      [name]: !prev[name],
-    }));
-  };
+  const toggle = (name) =>
+    setChecked((prev) => ({ ...prev, [name]: !prev[name] }));
 
   return (
     <div>
       {activeClasses.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-3">
           {activeClasses.map((name) => {
-<<<<<<< HEAD
-
-=======
             const koName = Object.keys(EN_NAMES).find((k) => EN_NAMES[k] === name);
             const color = CLASS_COLORS[name];
             const on = checked[name];
->>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
             return (
               <button
                 key={name}
@@ -462,27 +381,21 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
           })}
         </div>
       )}
-
-      <div
-        className={`w-full ${canvasClass} rounded-xl border bg-white overflow-hidden flex items-center justify-center`}
-      >
-        <canvas
-          ref={canvasRef}
-          className="w-full h-full object-contain"
-          style={{ display: "block" }}
-        />
+      <div className={`w-full ${canvasClass} rounded-xl border bg-white overflow-hidden flex items-center justify-center`}>
+        <canvas ref={canvasRef} className="w-full h-full object-contain" style={{ display: "block" }} />
       </div>
     </div>
   );
 }
 
+// [수정 - GradCAM 확대 모달 컴포넌트 추가]
+// 기존 단순 img 태그 확대 팝업을 GradcamView 기반 레이어 토글 모달로 교체
 function GradcamModal({ result, onClose }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6">
       <div className="bg-white rounded-3xl max-w-5xl w-full p-5 shadow-2xl">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-xl font-bold">Grad-CAM++ 확대 보기</h3>
-
           <button
             onClick={onClose}
             className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
@@ -490,16 +403,12 @@ function GradcamModal({ result, onClose }) {
             닫기
           </button>
         </div>
-
-        <GradcamView
-          result={result}
-          chipSize="text-sm"
-          canvasClass="max-h-[70vh]"
-        />
+        <GradcamView result={result} chipSize="text-sm" canvasClass="max-h-[70vh]" />
       </div>
     </div>
   );
 }
+// [수정 끝]
 
 export default function App() {
   const fileRef = useRef(null);
@@ -517,7 +426,7 @@ export default function App() {
   const [selectedCompareIds, setSelectedCompareIds] = useState([]);
   const [showCompareModal, setShowCompareModal] = useState(false);
 
-  const [compareSummary, setCompareSummary] = useState(null);
+  const [compareSummary, setCompareSummary] = useState("");
   const [compareLoading, setCompareLoading] = useState(false);
 
   const [showGradcamModal, setShowGradcamModal] = useState(false);
@@ -624,15 +533,8 @@ export default function App() {
     const hasNewMasks = !!data.gradcam_masks;
     const historyResult = {
       ...data,
-<<<<<<< HEAD
-      gradcam_image: null,
-      gradcam_layers: null,
-      base_image: null,
-      gradcam_contours: null,
-=======
       gradcam_image: null, // 디버깅용 합성본 — 항상 제거 (기존 동작 유지)
       gradcam_layers: hasNewMasks ? null : data.gradcam_layers, // 새 응답이면 컬러 버림
->>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
     };
 
     const newItem = {
@@ -651,9 +553,6 @@ export default function App() {
     } catch (err) {
       console.error("기록 저장 실패:", err);
 
-<<<<<<< HEAD
-      const lighterHistory = [newItem, ...history].slice(0, 5);
-=======
       const lighterHistory = [newItem, ...history]
         .slice(0, 5)
         .map((item) => ({
@@ -665,7 +564,6 @@ export default function App() {
           },
         }));
 
->>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
       setHistory(lighterHistory);
       localStorage.setItem("analysisHistory", JSON.stringify(lighterHistory));
 
@@ -701,7 +599,7 @@ export default function App() {
     setHistory([]);
     setSelectedCompareIds([]);
     setShowCompareModal(false);
-    setCompareSummary(null);
+    setCompareSummary("");
     localStorage.removeItem("analysisHistory");
   };
 
@@ -750,7 +648,7 @@ export default function App() {
 
     try {
       setCompareLoading(true);
-      setCompareSummary(null);
+      setCompareSummary("");
 
       const payload = {
         items: compareItems.map((item) => item.result),
@@ -769,12 +667,52 @@ export default function App() {
       }
 
       const data = await res.json();
-      setCompareSummary(data);
+      setCompareSummary(data.compare_summary || "");
     } catch (err) {
       console.error("LLM 비교 설명 오류:", err);
       alert("LLM 비교 설명 생성 중 오류가 발생했습니다.");
     } finally {
       setCompareLoading(false);
+    }
+  };
+
+  const reportText = result
+    ? `
+[분석 리포트]
+
+1. 입력 조건
+- 재질: ${materialText}
+
+2. 분석 결과
+- 예측된 파손 유형: ${result.display_prediction || result.prediction}
+- 신뢰도: ${result.confidence}
+- 혼합 여부: ${result.is_mixed ? "혼합 가능성 있음" : "단일 유형 가능성 높음"}
+- 신뢰도 상태: ${result.confidence_message}
+
+3. 주요 특징
+- ${result.feature}
+
+4. 예상 원인
+- ${result.expected_cause}
+
+5. 종합 설명
+- ${result.explanation}
+
+6. 해석 의견
+- 본 결과는 업로드된 파손단면 이미지와 사용자가 선택한 재질 정보를 바탕으로 생성된 분석 결과입니다.
+- 실제 판정 시에는 추가 실험 및 전문가 검토가 필요할 수 있습니다.
+`.trim()
+    : "";
+
+  const handleCopyReport = async () => {
+    if (!reportText) return;
+
+    try {
+      await navigator.clipboard.writeText(reportText);
+      alert("분석 리포트가 복사되었습니다.");
+    } catch (err) {
+      console.error(err);
+      alert("복사에 실패했습니다.");
     }
   };
 
@@ -813,12 +751,12 @@ export default function App() {
           {history.length > 0 && (
             <div className="mb-4 p-3 rounded-xl bg-blue-50 border border-blue-100">
               <p className="text-xs text-blue-700 mb-2">
-                비교할 기록을 2개 선택하세요.
+                비교할 기록을 2~3개 선택하세요.
               </p>
 
               <button
                 onClick={() => {
-                  setCompareSummary(null);
+                  setCompareSummary("");
                   setShowCompareModal(true);
                 }}
                 disabled={selectedCompareIds.length < 2}
@@ -997,10 +935,7 @@ export default function App() {
 
           <section className={layout.section}>
             <div className="mb-6">
-              <h2 className="text-3xl font-bold">
-                유사도 기반 파손 유형 비교
-              </h2>
-
+              <h2 className="text-3xl font-bold">유사도 기반 파손 유형 비교</h2>
               <p className="text-slate-500 mt-2">
                 혼합 가능성이 있으면 새 카드를 추가하지 않고 상위 두 유형 카드가
                 함께 강조됩니다.
@@ -1102,11 +1037,7 @@ export default function App() {
                         Grad-CAM++ 영역 시각화
                       </h4>
 
-<<<<<<< HEAD
-                      {(result.gradcam_layers || result.gradcam_image) && (
-=======
                       {(result.gradcam_masks || result.gradcam_layers) && (
->>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
                         <button
                           onClick={() => setShowGradcamModal(true)}
                           className="text-xs px-3 py-1 rounded-full bg-slate-900 text-white hover:bg-slate-700 transition"
@@ -1116,30 +1047,9 @@ export default function App() {
                       )}
                     </div>
 
-<<<<<<< HEAD
-                    {result.gradcam_layers && result.base_image ? (
-                      <GradcamView
-                        result={result}
-                        chipSize="text-xs"
-                        canvasClass="h-[260px]"
-                      />
-                    ) : result.gradcam_image ? (
-                      <button
-                        type="button"
-                        onClick={() => setShowGradcamModal(true)}
-                        className="w-full h-[260px] rounded-xl border bg-white flex items-center justify-center overflow-hidden hover:border-blue-300 transition"
-                      >
-                        <img
-                          src={result.gradcam_image}
-                          alt="Grad-CAM++"
-                          className="w-full h-full object-contain"
-                        />
-                      </button>
-=======
                     {/* [신규 - 토글 재계산 기능] gradcam_masks 또는 gradcam_layers 중 어느 쪽이 있어도 GradcamView가 알아서 처리 */}
                     {(result.gradcam_masks || result.gradcam_layers) ? (
                       <GradcamView result={result} chipSize="text-xs" canvasClass="h-[260px]" />
->>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
                     ) : (
                       <div className="w-full h-[260px] rounded-xl border bg-white flex items-center justify-center">
                         <p className="text-slate-500 font-medium">
@@ -1147,11 +1057,31 @@ export default function App() {
                         </p>
                       </div>
                     )}
-<<<<<<< HEAD
-=======
                     {/* [신규 끝] */}
->>>>>>> 40fe928 (gradcam 영역 표기방법 변경)
                   </div>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {result && (
+            <section className="max-w-7xl mx-auto px-6 pb-12">
+              <div className={layout.card}>
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                  <h3 className="text-2xl font-bold">분석 리포트</h3>
+
+                  <button
+                    onClick={handleCopyReport}
+                    className="rounded-xl bg-blue-600 text-white px-4 py-2 text-sm font-medium hover:bg-blue-700 transition"
+                  >
+                    리포트 복사
+                  </button>
+                </div>
+
+                <div className="rounded-2xl border bg-slate-50 p-5">
+                  <pre className="whitespace-pre-wrap break-keep text-slate-700 leading-7 font-sans">
+                    {reportText}
+                  </pre>
                 </div>
               </div>
             </section>
@@ -1161,7 +1091,7 @@ export default function App() {
 
       {showCompareModal && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
-          <div className="bg-white rounded-3xl max-w-[70vw] w-full max-h-[90vh] overflow-y-auto p-8 shadow-2xl">
+          <div className="bg-white rounded-3xl max-w-6xl w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl">
             <div className="flex items-start justify-between gap-4 mb-5">
               <div>
                 <h3 className="text-2xl font-bold">분석 결과 비교</h3>
@@ -1190,112 +1120,9 @@ export default function App() {
             </div>
 
             {compareSummary && (
-              <div className="mb-6 space-y-5">
-                <div className="rounded-3xl border border-blue-200 bg-blue-50 p-6 text-blue-900">
-                  <p className="text-sm font-bold mb-2">핵심 요약</p>
-
-                  <p className="text-2xl font-bold leading-9">
-                    {compareSummary.summary}
-                  </p>
-
-                  <p className="text-sm leading-6 mt-4 text-blue-700">
-                    {compareSummary.final_opinion}
-                  </p>
-                </div>
-
-                <div className="grid lg:grid-cols-2 gap-5">
-                  <div className="rounded-3xl border border-purple-200 bg-purple-50 p-5 text-purple-900">
-                    <p className="text-lg font-bold mb-4">파손 메커니즘 차이</p>
-
-                    <div className="grid grid-cols-[1fr_auto_1fr] gap-4 items-stretch">
-                      <div className="bg-white/80 rounded-2xl p-4 border border-purple-100">
-                        <p className="text-sm font-bold text-purple-700 mb-2">
-                          비교 1
-                        </p>
-
-                        <p className="text-sm leading-7">
-                          {compareSummary.mechanism_compare_1}
-                        </p>
-                      </div>
-
-                      <div className="flex items-center justify-center">
-                        <span className="rounded-full bg-purple-500 text-white text-xs font-bold px-4 py-3">
-                          VS
-                        </span>
-                      </div>
-
-                      <div className="bg-white/80 rounded-2xl p-4 border border-purple-100">
-                        <p className="text-sm font-bold text-blue-700 mb-2">
-                          비교 2
-                        </p>
-
-                        <p className="text-sm leading-7">
-                          {compareSummary.mechanism_compare_2}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-amber-900">
-                    <p className="text-lg font-bold mb-4">
-                      신뢰도 및 해석 주의점
-                    </p>
-
-                    <div className="grid grid-cols-[1fr_auto_1fr] gap-4 items-center mb-4">
-                      <div>
-                        <p className="text-sm font-bold mb-2">비교 1</p>
-
-                        <div className="h-4 rounded-full bg-white overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-purple-500"
-                            style={{
-                              width:
-                                compareItems[0]?.result?.confidence || "0%",
-                            }}
-                          />
-                        </div>
-
-                        <p className="text-lg font-bold mt-3">
-                          {compareItems[0]?.result?.confidence}
-                        </p>
-                      </div>
-
-                      <span className="rounded-full bg-white border border-amber-200 px-4 py-3 text-xs font-bold">
-                        VS
-                      </span>
-
-                      <div>
-                        <p className="text-sm font-bold mb-2">비교 2</p>
-
-                        <div className="h-4 rounded-full bg-white overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-blue-500"
-                            style={{
-                              width:
-                                compareItems[1]?.result?.confidence || "0%",
-                            }}
-                          />
-                        </div>
-
-                        <p className="text-lg font-bold mt-3">
-                          {compareItems[1]?.result?.confidence}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl bg-white/80 border border-amber-100 p-5">
-                      <p className="text-sm leading-7">
-                        {compareSummary.confidence_opinion}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <p className="text-xs text-slate-400">
-                  본 비교 분석은 이미지와 입력 정보를 바탕으로 한 AI 추정
-                  결과입니다. 실제 판정에는 추가 실험 및 전문가 검토가 필요할 수
-                  있습니다.
-                </p>
+              <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-blue-800">
+                <p className="text-sm font-semibold mb-2">LLM 비교 해석</p>
+                <p className="text-sm leading-6">{compareSummary}</p>
               </div>
             )}
 
@@ -1400,39 +1227,11 @@ export default function App() {
         </div>
       )}
 
-      {showGradcamModal &&
-        result &&
-        (result.gradcam_layers && result.base_image ? (
-          <GradcamModal
-            result={result}
-            onClose={() => setShowGradcamModal(false)}
-          />
-        ) : (
-          result.gradcam_image && (
-            <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6">
-              <div className="bg-white rounded-3xl max-w-5xl w-full p-5 shadow-2xl">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xl font-bold">Grad-CAM++ 확대 보기</h3>
-
-                  <button
-                    onClick={() => setShowGradcamModal(false)}
-                    className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
-                  >
-                    닫기
-                  </button>
-                </div>
-
-                <div className="bg-slate-100 rounded-2xl p-4">
-                  <img
-                    src={result.gradcam_image}
-                    alt="Grad-CAM++ 확대"
-                    className="w-full max-h-[75vh] object-contain rounded-xl"
-                  />
-                </div>
-              </div>
-            </div>
-          )
-        ))}
+      {/* [수정 - 기존 단순 img 확대 모달을 GradcamModal 컴포넌트로 교체: 레이어 토글 기능 포함] */}
+      {showGradcamModal && result && (
+        <GradcamModal result={result} onClose={() => setShowGradcamModal(false)} />
+      )}
+      {/* [수정 끝] */}
     </div>
   );
 }
