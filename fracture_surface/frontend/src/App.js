@@ -12,11 +12,15 @@ const EN_NAMES = {
   "입계 파괴": "Intergranular",
 };
 
+// [수정 - FlipCard와 색상 통일]: Tailwind blue/green/amber/red -600 색상으로 교체
+// FlipCard의 배지 색상(blue-700, green-700, amber-700, red-700)과 같은 계열의 -600 색을 사용해
+// 카드와 GradCAM 윤곽선이 한눈에 같은 분류임을 인식할 수 있게 함.
+// 색은 GradCAM 그릴 때(drawPolylines) 직접 적용되므로 백엔드 수정 불필요.
 const CLASS_COLORS = {
-  Cleavage:      "#f59b3b",
-  Ductile:       "#22c55e",
-  Fatigue:       "#15ccfa",
-  Intergranular: "#4444ef",
+  Cleavage:      "#2563EB",  // Tailwind blue-600
+  Ductile:       "#16A34A",  // Tailwind green-600
+  Fatigue:       "#D97706",  // Tailwind amber-600
+  Intergranular: "#DC2626",  // Tailwind red-600
 };
 // [수정 끝]
 
@@ -90,34 +94,6 @@ function decodeMaskFromImage(img, W, H) {
     mask[i] = data[i * 4] > 127 ? 255 : 0; // R 채널
   }
   return mask;
-}
-
-// 활성 클래스 조합으로 solo/overlap 재계산
-// active: ["Cleavage", "Fatigue"] 식의 영문 클래스명 배열
-// masks: { Cleavage: Uint8Array, ... }
-function computeSoloOverlap(masks, active, W, H) {
-  const N = W * H;
-  const count = new Int32Array(N);
-  for (const name of active) {
-    const m = masks[name];
-    if (!m) continue;
-    for (let i = 0; i < N; i++) if (m[i] > 0) count[i]++;
-  }
-  const out = {};
-  for (const name of active) {
-    const m = masks[name];
-    if (!m) continue;
-    const solo = new Uint8Array(N);
-    const overlap = new Uint8Array(N);
-    for (let i = 0; i < N; i++) {
-      if (m[i] > 0) {
-        if (count[i] === 1) solo[i] = 255;
-        else if (count[i] >= 2) overlap[i] = 255;
-      }
-    }
-    out[name] = { solo, overlap };
-  }
-  return out;
 }
 
 // 마칭 스퀘어: 이진 마스크 → 선분 배열
@@ -202,14 +178,35 @@ function segmentsToPolylines(segments) {
 }
 
 // 폴리라인 배열을 canvas에 실선/점선으로 그리기
-function drawPolylines(ctx, polylines, color, { dashed = false, lineWidth = 3 } = {}) {
+// [수정 - 번갈아 점선] 외부에서 dashPattern과 dashOffset을 지정할 수 있게 확장
+// 기본 점선은 [16, 10]이지만 N클래스 겹침에서는 [14, (N-1)*18+4] 같은 가변 패턴 필요.
+// [수정 - 점선 끝 침범 해결] 점선일 때는 lineCap="butt"로 강제.
+//   round일 경우 각 대시 양 끝에 반원이 추가되어 두께(4.5px)의 절반만큼 양옆으로 튀어나옴.
+//   결과적으로 14px 대시가 18.5px처럼 보이고 4px 공백이 거의 사라지며,
+//   옆 클래스 대시의 둥근 끝이 자기 색으로 덮어버려 색 침범 발생.
+//   butt는 끝이 직각이라 의도한 길이 그대로 그려짐.
+function drawPolylines(ctx, polylines, color, {
+  dashed = false,
+  lineWidth = 3,
+  dashPattern = null,   // 명시적 지정 시 우선, 아니면 dashed에 따라 기본값
+  dashOffset = 0,
+} = {}) {
   ctx.save();
   ctx.strokeStyle = color;
   ctx.lineWidth = lineWidth;
   ctx.lineJoin = "round";
-  ctx.lineCap = "round";
-  if (dashed) ctx.setLineDash([10, 8]);
-  else ctx.setLineDash([]);
+  const isDashed = !!dashPattern || dashed;
+  ctx.lineCap = isDashed ? "butt" : "round";  // 점선은 butt, 실선은 round 유지
+  if (dashPattern) {
+    ctx.setLineDash(dashPattern);
+    ctx.lineDashOffset = dashOffset;
+  } else if (dashed) {
+    ctx.setLineDash([16, 10]);  // [수정 - 점선 명확도 강화] 멀리서도 점선 구분 확실히
+    ctx.lineDashOffset = 0;
+  } else {
+    ctx.setLineDash([]);
+    ctx.lineDashOffset = 0;
+  }
   for (const poly of polylines) {
     if (poly.length < 2) continue;
     ctx.beginPath();
@@ -315,7 +312,20 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
     ctx.drawImage(base, 0, 0);
 
     if (hasMasks) {
-      // 모드 A: 활성 클래스 조합으로 solo/overlap 재계산 → 윤곽선 그리기
+      // 모드 A: 윤곽선 기반 분리 (NEW 알고리즘)
+      //
+      // 핵심 규칙:
+      //   - 자기 윤곽선이 다른 클래스의 마스크 영역 밖이면 → 자기 색 실선
+      //   - 자기 윤곽선이 다른 클래스의 마스크 영역 안으로 들어가면 → 자기 색 점선
+      //   - 두 클래스의 점선이 같은 좌표에 겹치면 → 번갈아 점선 (N = 그 자리 겹친 클래스 수)
+      //
+      // 이전 방식(마스크 영역 겹침 기반)의 문제:
+      //   파랑 마스크와 초록 마스크가 일부 겹치면 그 영역 윤곽선을 모두 점선으로 처리했는데,
+      //   실제로는 두 윤곽선이 다른 자리에 있을 수 있어 가까이 있어도 색 침범이 발생했음.
+      //
+      // 새 방식:
+      //   윤곽선 점 하나하나에 대해 "이 점이 다른 클래스 마스크 안에 있나?"를 판정.
+      //   따라서 윤곽선이 서로 가깝지만 다른 자리에 있으면 둘 다 실선으로 처리됨.
       const active = allClasses.filter((n) => checked[n]);
       if (active.length === 0) return;
 
@@ -323,25 +333,103 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
       for (const name of active) {
         if (masksRef.current[name]) masks[name] = masksRef.current[name];
       }
-      const so = computeSoloOverlap(masks, active, W, H);
 
-      // 1) solo는 실선
+      const DASH_ON = 14;
+      const SLOT = 22; // 대시14 + 공백8
+
+      // 점 (x, y)가 클래스 name의 마스크 안인지 검사
+      // 마스크는 정수 픽셀 격자, 점은 0.5 단위 부동소수일 수 있어 반올림 후 확인
+      const isInsideMask = (x, y, name) => {
+        const m = masks[name];
+        if (!m) return false;
+        const ix = Math.round(x);
+        const iy = Math.round(y);
+        if (ix < 0 || iy < 0 || ix >= W || iy >= H) return false;
+        return m[iy * W + ix] > 0;
+      };
+
+      // 점 p가 "어느 다른 클래스 마스크 안에 있는가" → set 반환
+      const othersContaining = (p, selfName) => {
+        const result = [];
+        for (const other of active) {
+          if (other === selfName) continue;
+          if (isInsideMask(p.x, p.y, other)) result.push(other);
+        }
+        return result;
+      };
+
       for (const name of active) {
-        const data = so[name];
-        if (!data) continue;
-        const segs = maskToSegments(data.solo, W, H);
-        if (segs.length === 0) continue;
-        const polys = segmentsToPolylines(segs);
-        drawPolylines(ctx, polys, CLASS_COLORS[name], { dashed: false, lineWidth: 3 });
-      }
-      // 2) overlap은 점선
-      for (const name of active) {
-        const data = so[name];
-        if (!data) continue;
-        const segs = maskToSegments(data.overlap, W, H);
-        if (segs.length === 0) continue;
-        const polys = segmentsToPolylines(segs);
-        drawPolylines(ctx, polys, CLASS_COLORS[name], { dashed: true, lineWidth: 3 });
+        const mask = masks[name];
+        if (!mask) continue;
+
+        // 이 클래스 전용 임시 캔버스 (색 침범 방지)
+        const layerCanvas = document.createElement("canvas");
+        layerCanvas.width = W;
+        layerCanvas.height = H;
+        const layerCtx = layerCanvas.getContext("2d");
+
+        // 자기 마스크에서 윤곽선 추출
+        const segs = maskToSegments(mask, W, H);
+        if (segs.length === 0) {
+          ctx.drawImage(layerCanvas, 0, 0);
+          continue;
+        }
+        const polylines = segmentsToPolylines(segs);
+
+        // 각 폴리라인을 점별로 검사해 "구간"으로 분리
+        //   구간 키 = "solo" 또는 "overlap:<클래스 정렬 문자열>"
+        //   예: "overlap:Ductile" (초록 안에 들어간 파랑 구간)
+        //   예: "overlap:Ductile,Fatigue" (초록·노랑 둘 다 안에 들어간 구간)
+        for (const poly of polylines) {
+          if (poly.length < 2) continue;
+
+          // 각 점의 "다른 클래스 포함 상태" 계산
+          const pointStates = poly.map((p) => {
+            const others = othersContaining(p, name);
+            if (others.length === 0) return "solo";
+            return "overlap:" + others.sort().join(",");
+          });
+
+          // 연속된 동일 상태 점들을 묶어 sub-polyline 만들기
+          // 경계에서는 공유 점을 양쪽에 포함 → 끊김 없이 연결
+          let segStart = 0;
+          for (let i = 1; i <= pointStates.length; i++) {
+            const isEnd = i === pointStates.length;
+            const stateChanged = !isEnd && pointStates[i] !== pointStates[segStart];
+            if (isEnd || stateChanged) {
+              const subPoly = poly.slice(segStart, i + (isEnd ? 0 : 1));
+              const state = pointStates[segStart];
+
+              if (state === "solo") {
+                // 자기 색 실선
+                drawPolylines(layerCtx, [subPoly], CLASS_COLORS[name], {
+                  lineWidth: 3,
+                });
+              } else {
+                // overlap — 자기 색 점선
+                // 이 구간에 같이 있을 수 있는 클래스 수 N = 1(자기) + 다른 클래스 수
+                const others = state.slice("overlap:".length).split(",");
+                const candidates = [name, ...others].sort();
+                const N = candidates.length;
+                const myIndex = candidates.indexOf(name); // 0..N-1
+                const period = N * SLOT;
+                const dashPattern = [DASH_ON, period - DASH_ON];
+                const dashOffset = -myIndex * SLOT;
+
+                drawPolylines(layerCtx, [subPoly], CLASS_COLORS[name], {
+                  lineWidth: 4.5,
+                  dashPattern,
+                  dashOffset,
+                });
+              }
+
+              segStart = i;
+            }
+          }
+        }
+
+        // 완성된 레이어를 메인 캔버스에 합성
+        ctx.drawImage(layerCanvas, 0, 0);
       }
     } else {
       // 모드 B: 기존 동작 — 컬러 레이어를 그대로 합성
