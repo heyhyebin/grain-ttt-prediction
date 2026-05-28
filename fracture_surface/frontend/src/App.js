@@ -1,10 +1,8 @@
-//App.js
 import { useState, useRef, useEffect } from "react";
 import FlipCard from "./components/FlipCard";
 
 const FRACTURE_TYPES = ["취성 파괴", "연성 파괴", "피로 파괴", "입계 파괴"];
 
-// [수정 - 한글-영문 클래스명 매핑 및 토글 칩 색상 상수 추가]
 const EN_NAMES = {
   "취성 파괴": "Cleavage",
   "연성 파괴": "Ductile",
@@ -12,17 +10,12 @@ const EN_NAMES = {
   "입계 파괴": "Intergranular",
 };
 
-// [수정 - FlipCard와 색상 통일]: Tailwind blue/green/amber/red -600 색상으로 교체
-// FlipCard의 배지 색상(blue-700, green-700, amber-700, red-700)과 같은 계열의 -600 색을 사용해
-// 카드와 GradCAM 윤곽선이 한눈에 같은 분류임을 인식할 수 있게 함.
-// 색은 GradCAM 그릴 때(drawPolylines) 직접 적용되므로 백엔드 수정 불필요.
 const CLASS_COLORS = {
-  Cleavage:      "#2563EB",  // Tailwind blue-600
-  Ductile:       "#16A34A",  // Tailwind green-600
-  Fatigue:       "#D97706",  // Tailwind amber-600
-  Intergranular: "#DC2626",  // Tailwind red-600
+  Cleavage: "#2563EB",
+  Ductile: "#16A34A",
+  Fatigue: "#D97706",
+  Intergranular: "#DC2626",
 };
-// [수정 끝]
 
 const DEFAULT_SIMILARITIES = {
   "취성 파괴": { sim: "—", best: false, mixed: false },
@@ -66,11 +59,6 @@ const layout = {
   select: "p-3 border rounded-xl bg-white",
 };
 
-// ═══════════════════════════════════════════════════════════════
-// [신규 - 토글 재계산 기능] 마스크 기반 동적 렌더링 유틸
-// ═══════════════════════════════════════════════════════════════
-
-// 이미지 로드를 Promise로 감싸는 헬퍼
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -80,27 +68,34 @@ function loadImage(src) {
   });
 }
 
-// PNG data URL → Uint8Array(0/255) 이진 마스크로 디코딩
-// 흑백 PNG이지만 브라우저는 RGBA로 읽으므로 R 채널만 사용해서 임계 처리
 function decodeMaskFromImage(img, W, H) {
   const c = document.createElement("canvas");
   c.width = W;
   c.height = H;
+
   const ctx = c.getContext("2d");
   ctx.drawImage(img, 0, 0, W, H);
-  const { data } = ctx.getImageData(0, 0, W, H); // RGBA 4채널
+
+  const { data } = ctx.getImageData(0, 0, W, H);
+
   const mask = new Uint8Array(W * H);
+
   for (let i = 0; i < W * H; i++) {
-    mask[i] = data[i * 4] > 127 ? 255 : 0; // R 채널
+    mask[i] = data[i * 4] > 127 ? 255 : 0;
   }
+
   return mask;
 }
 
-// 마칭 스퀘어: 이진 마스크 → 선분 배열
 function maskToSegments(mask, W, H) {
   const segments = [];
+
   const get = (x, y) =>
-    x < 0 || y < 0 || x >= W || y >= H ? 0 : mask[y * W + x] > 0 ? 1 : 0;
+    x < 0 || y < 0 || x >= W || y >= H
+      ? 0
+      : mask[y * W + x] > 0
+      ? 1
+      : 0;
 
   for (let y = -1; y < H; y++) {
     for (let x = -1; x < W; x++) {
@@ -108,253 +103,310 @@ function maskToSegments(mask, W, H) {
       const tr = get(x + 1, y);
       const bl = get(x, y + 1);
       const br = get(x + 1, y + 1);
+
       const code = (tl << 3) | (tr << 2) | (br << 1) | bl;
+
       const top = { x: x + 1.0, y: y + 0.5 };
       const right = { x: x + 1.5, y: y + 1.0 };
       const bottom = { x: x + 1.0, y: y + 1.5 };
       const left = { x: x + 0.5, y: y + 1.0 };
 
       switch (code) {
-        case 1:  segments.push([left, bottom]); break;
-        case 2:  segments.push([bottom, right]); break;
-        case 3:  segments.push([left, right]); break;
-        case 4:  segments.push([top, right]); break;
-        case 5:  segments.push([left, top]); segments.push([bottom, right]); break;
-        case 6:  segments.push([top, bottom]); break;
-        case 7:  segments.push([left, top]); break;
-        case 8:  segments.push([top, left]); break;
-        case 9:  segments.push([top, bottom]); break;
-        case 10: segments.push([top, right]); segments.push([left, bottom]); break;
-        case 11: segments.push([top, right]); break;
-        case 12: segments.push([left, right]); break;
-        case 13: segments.push([bottom, right]); break;
-        case 14: segments.push([left, bottom]); break;
-        default: break;
+        case 1:
+          segments.push([left, bottom]);
+          break;
+        case 2:
+          segments.push([bottom, right]);
+          break;
+        case 3:
+          segments.push([left, right]);
+          break;
+        case 4:
+          segments.push([top, right]);
+          break;
+        case 5:
+          segments.push([left, top]);
+          segments.push([bottom, right]);
+          break;
+        case 6:
+          segments.push([top, bottom]);
+          break;
+        case 7:
+          segments.push([left, top]);
+          break;
+        case 8:
+          segments.push([top, left]);
+          break;
+        case 9:
+          segments.push([top, bottom]);
+          break;
+        case 10:
+          segments.push([top, right]);
+          segments.push([left, bottom]);
+          break;
+        case 11:
+          segments.push([top, right]);
+          break;
+        case 12:
+          segments.push([left, right]);
+          break;
+        case 13:
+          segments.push([bottom, right]);
+          break;
+        case 14:
+          segments.push([left, bottom]);
+          break;
+        default:
+          break;
       }
     }
   }
+
   return segments;
 }
 
-// 선분 배열 → 연결된 폴리라인 배열
 function segmentsToPolylines(segments) {
   const key = (p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+
   const map = new Map();
+
   segments.forEach((seg, i) => {
     const k1 = key(seg[0]);
     const k2 = key(seg[1]);
+
     if (!map.has(k1)) map.set(k1, []);
     if (!map.has(k2)) map.set(k2, []);
+
     map.get(k1).push(i);
     map.get(k2).push(i);
   });
 
   const used = new Array(segments.length).fill(false);
+
   const polylines = [];
 
   for (let i = 0; i < segments.length; i++) {
     if (used[i]) continue;
+
     used[i] = true;
+
     const poly = [segments[i][0], segments[i][1]];
 
     let extended = true;
+
     while (extended) {
       extended = false;
+
       const tail = poly[poly.length - 1];
       const cands = map.get(key(tail)) || [];
+
       for (const ci of cands) {
         if (used[ci]) continue;
+
         const seg = segments[ci];
+
         if (key(seg[0]) === key(tail)) {
-          poly.push(seg[1]); used[ci] = true; extended = true; break;
+          poly.push(seg[1]);
+          used[ci] = true;
+          extended = true;
+          break;
         } else if (key(seg[1]) === key(tail)) {
-          poly.push(seg[0]); used[ci] = true; extended = true; break;
+          poly.push(seg[0]);
+          used[ci] = true;
+          extended = true;
+          break;
         }
       }
     }
+
     polylines.push(poly);
   }
+
   return polylines;
 }
 
-// 폴리라인 배열을 canvas에 실선/점선으로 그리기
-// [수정 - 번갈아 점선] 외부에서 dashPattern과 dashOffset을 지정할 수 있게 확장
-// 기본 점선은 [16, 10]이지만 N클래스 겹침에서는 [14, (N-1)*18+4] 같은 가변 패턴 필요.
-// [수정 - 점선 끝 침범 해결] 점선일 때는 lineCap="butt"로 강제.
-//   round일 경우 각 대시 양 끝에 반원이 추가되어 두께(4.5px)의 절반만큼 양옆으로 튀어나옴.
-//   결과적으로 14px 대시가 18.5px처럼 보이고 4px 공백이 거의 사라지며,
-//   옆 클래스 대시의 둥근 끝이 자기 색으로 덮어버려 색 침범 발생.
-//   butt는 끝이 직각이라 의도한 길이 그대로 그려짐.
-function drawPolylines(ctx, polylines, color, {
-  dashed = false,
-  lineWidth = 3,
-  dashPattern = null,   // 명시적 지정 시 우선, 아니면 dashed에 따라 기본값
-  dashOffset = 0,
-} = {}) {
+function drawPolylines(
+  ctx,
+  polylines,
+  color,
+  {
+    dashed = false,
+    lineWidth = 3,
+    dashPattern = null,
+    dashOffset = 0,
+  } = {}
+) {
   ctx.save();
+
   ctx.strokeStyle = color;
   ctx.lineWidth = lineWidth;
   ctx.lineJoin = "round";
+
   const isDashed = !!dashPattern || dashed;
-  ctx.lineCap = isDashed ? "butt" : "round";  // 점선은 butt, 실선은 round 유지
+
+  ctx.lineCap = isDashed ? "butt" : "round";
+
   if (dashPattern) {
     ctx.setLineDash(dashPattern);
     ctx.lineDashOffset = dashOffset;
   } else if (dashed) {
-    ctx.setLineDash([16, 10]);  // [수정 - 점선 명확도 강화] 멀리서도 점선 구분 확실히
+    ctx.setLineDash([16, 10]);
     ctx.lineDashOffset = 0;
   } else {
     ctx.setLineDash([]);
     ctx.lineDashOffset = 0;
   }
+
   for (const poly of polylines) {
     if (poly.length < 2) continue;
+
     ctx.beginPath();
+
     ctx.moveTo(poly[0].x, poly[0].y);
-    for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
+
+    for (let i = 1; i < poly.length; i++) {
+      ctx.lineTo(poly[i].x, poly[i].y);
+    }
+
     ctx.stroke();
   }
+
   ctx.restore();
 }
 
-// ═══════════════════════════════════════════════════════════════
-// GradcamView — 두 가지 렌더링 모드 분기
-// ═══════════════════════════════════════════════════════════════
-// 모드 A (NEW): result.gradcam_masks 있음 → 마스크 기반 동적 재계산
-// 모드 B (OLD): result.gradcam_masks 없음 → 기존 gradcam_layers 합성 (옛 기록 호환)
 function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }) {
   const canvasRef = useRef(null);
   const baseImgRef = useRef(null);
 
-  // 모드 A용: 디코딩된 이진 마스크 보관
-  const masksRef = useRef({}); // { Cleavage: Uint8Array, ... }
-  // 모드 B용: 컬러 레이어 이미지 보관
+  const masksRef = useRef({});
   const layerImgsRef = useRef({});
 
-  const hasMasks = !!result.gradcam_masks; // 새 응답인지 옛 응답인지
-  const sourceObj = hasMasks ? result.gradcam_masks : (result.gradcam_layers || {});
+  const hasMasks = !!result.gradcam_masks;
+  const sourceObj = hasMasks ? result.gradcam_masks : result.gradcam_layers || {};
 
-  // 토글 칩은 contour가 실제로 존재하는 클래스만 표시 (기존 동작 유지)
   const allClasses = Object.keys(sourceObj);
+
   const activeClasses = allClasses.filter((name) => {
     const contours = result.gradcam_contours?.[name];
     return contours && contours.length > 0;
   });
 
-  // 토글 상태는 컴포넌트 내부에서만 — 모달이 닫히거나 result가 바뀌면 리셋
   const [checked, setChecked] = useState(() =>
-    Object.fromEntries(allClasses.map((n) => [n, true]))
+    Object.fromEntries(allClasses.map((name) => [name, true]))
   );
 
-  // result가 바뀌면 토글 상태도 리셋 (다른 분석 결과 클릭 시)
   useEffect(() => {
-    setChecked(Object.fromEntries(allClasses.map((n) => [n, true])));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setChecked(Object.fromEntries(allClasses.map((name) => [name, true])));
   }, [result]);
 
-  // 초기 로드: base 이미지 + (모드 A) 마스크들 또는 (모드 B) 컬러 레이어들
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
+    const loadAll = async () => {
+      if (!result.base_image) return;
+
       const base = await loadImage(result.base_image);
       if (cancelled) return;
+
       baseImgRef.current = base;
+
       const W = base.naturalWidth;
       const H = base.naturalHeight;
 
       if (hasMasks) {
-        // 모드 A: 흑백 마스크를 Uint8Array로 디코딩
         masksRef.current = {};
+
         for (const name of allClasses) {
           const src = sourceObj[name];
           if (!src) continue;
+
           const img = await loadImage(src);
           if (cancelled) return;
+
           masksRef.current[name] = decodeMaskFromImage(img, W, H);
         }
       } else {
-        // 모드 B: 컬러 레이어 이미지 그대로 보관
         layerImgsRef.current = {};
+
         for (const name of allClasses) {
           const src = sourceObj[name];
           if (!src) continue;
+
           layerImgsRef.current[name] = await loadImage(src);
         }
       }
 
       redraw();
-    })();
+    };
+
+    loadAll();
 
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result]);
 
-  // checked 변경 시 다시 그리기
   useEffect(() => {
     redraw();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checked]);
 
   function redraw() {
     const canvas = canvasRef.current;
     const base = baseImgRef.current;
+
     if (!canvas || !base) return;
 
     const W = base.naturalWidth;
     const H = base.naturalHeight;
+
     canvas.width = W;
     canvas.height = H;
+
     const ctx = canvas.getContext("2d");
+
     ctx.clearRect(0, 0, W, H);
     ctx.drawImage(base, 0, 0);
 
     if (hasMasks) {
-      // 모드 A: 윤곽선 기반 분리 (NEW 알고리즘)
-      //
-      // 핵심 규칙:
-      //   - 자기 윤곽선이 다른 클래스의 마스크 영역 밖이면 → 자기 색 실선
-      //   - 자기 윤곽선이 다른 클래스의 마스크 영역 안으로 들어가면 → 자기 색 점선
-      //   - 두 클래스의 점선이 같은 좌표에 겹치면 → 번갈아 점선 (N = 그 자리 겹친 클래스 수)
-      //
-      // 이전 방식(마스크 영역 겹침 기반)의 문제:
-      //   파랑 마스크와 초록 마스크가 일부 겹치면 그 영역 윤곽선을 모두 점선으로 처리했는데,
-      //   실제로는 두 윤곽선이 다른 자리에 있을 수 있어 가까이 있어도 색 침범이 발생했음.
-      //
-      // 새 방식:
-      //   윤곽선 점 하나하나에 대해 "이 점이 다른 클래스 마스크 안에 있나?"를 판정.
-      //   따라서 윤곽선이 서로 가깝지만 다른 자리에 있으면 둘 다 실선으로 처리됨.
-      const active = allClasses.filter((n) => checked[n]);
+      const active = allClasses.filter((name) => checked[name]);
       if (active.length === 0) return;
 
       const masks = {};
+
       for (const name of active) {
-        if (masksRef.current[name]) masks[name] = masksRef.current[name];
+        if (masksRef.current[name]) {
+          masks[name] = masksRef.current[name];
+        }
       }
 
       const DASH_ON = 14;
-      const SLOT = 22; // 대시14 + 공백8
+      const SLOT = 22;
 
-      // 점 (x, y)가 클래스 name의 마스크 안인지 검사
-      // 마스크는 정수 픽셀 격자, 점은 0.5 단위 부동소수일 수 있어 반올림 후 확인
       const isInsideMask = (x, y, name) => {
         const m = masks[name];
         if (!m) return false;
+
         const ix = Math.round(x);
         const iy = Math.round(y);
-        if (ix < 0 || iy < 0 || ix >= W || iy >= H) return false;
+
+        if (ix < 0 || iy < 0 || ix >= W || iy >= H) {
+          return false;
+        }
+
         return m[iy * W + ix] > 0;
       };
 
-      // 점 p가 "어느 다른 클래스 마스크 안에 있는가" → set 반환
       const othersContaining = (p, selfName) => {
         const result = [];
+
         for (const other of active) {
           if (other === selfName) continue;
-          if (isInsideMask(p.x, p.y, other)) result.push(other);
+
+          if (isInsideMask(p.x, p.y, other)) {
+            result.push(other);
+          }
         }
+
         return result;
       };
 
@@ -362,57 +414,58 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
         const mask = masks[name];
         if (!mask) continue;
 
-        // 이 클래스 전용 임시 캔버스 (색 침범 방지)
         const layerCanvas = document.createElement("canvas");
         layerCanvas.width = W;
         layerCanvas.height = H;
+
         const layerCtx = layerCanvas.getContext("2d");
 
-        // 자기 마스크에서 윤곽선 추출
         const segs = maskToSegments(mask, W, H);
+
         if (segs.length === 0) {
           ctx.drawImage(layerCanvas, 0, 0);
           continue;
         }
+
         const polylines = segmentsToPolylines(segs);
 
-        // 각 폴리라인을 점별로 검사해 "구간"으로 분리
-        //   구간 키 = "solo" 또는 "overlap:<클래스 정렬 문자열>"
-        //   예: "overlap:Ductile" (초록 안에 들어간 파랑 구간)
-        //   예: "overlap:Ductile,Fatigue" (초록·노랑 둘 다 안에 들어간 구간)
         for (const poly of polylines) {
           if (poly.length < 2) continue;
 
-          // 각 점의 "다른 클래스 포함 상태" 계산
           const pointStates = poly.map((p) => {
             const others = othersContaining(p, name);
-            if (others.length === 0) return "solo";
+
+            if (others.length === 0) {
+              return "solo";
+            }
+
             return "overlap:" + others.sort().join(",");
           });
 
-          // 연속된 동일 상태 점들을 묶어 sub-polyline 만들기
-          // 경계에서는 공유 점을 양쪽에 포함 → 끊김 없이 연결
           let segStart = 0;
+
           for (let i = 1; i <= pointStates.length; i++) {
             const isEnd = i === pointStates.length;
-            const stateChanged = !isEnd && pointStates[i] !== pointStates[segStart];
+
+            const stateChanged =
+              !isEnd && pointStates[i] !== pointStates[segStart];
+
             if (isEnd || stateChanged) {
               const subPoly = poly.slice(segStart, i + (isEnd ? 0 : 1));
               const state = pointStates[segStart];
 
               if (state === "solo") {
-                // 자기 색 실선
                 drawPolylines(layerCtx, [subPoly], CLASS_COLORS[name], {
                   lineWidth: 3,
                 });
               } else {
-                // overlap — 자기 색 점선
-                // 이 구간에 같이 있을 수 있는 클래스 수 N = 1(자기) + 다른 클래스 수
                 const others = state.slice("overlap:".length).split(",");
                 const candidates = [name, ...others].sort();
+
                 const N = candidates.length;
-                const myIndex = candidates.indexOf(name); // 0..N-1
+                const myIndex = candidates.indexOf(name);
                 const period = N * SLOT;
+
                 const dashPattern = [DASH_ON, period - DASH_ON];
                 const dashOffset = -myIndex * SLOT;
 
@@ -428,30 +481,40 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
           }
         }
 
-        // 완성된 레이어를 메인 캔버스에 합성
         ctx.drawImage(layerCanvas, 0, 0);
       }
     } else {
-      // 모드 B: 기존 동작 — 컬러 레이어를 그대로 합성
       for (const name of allClasses) {
         if (!checked[name]) continue;
+
         const layerImg = layerImgsRef.current[name];
-        if (layerImg) ctx.drawImage(layerImg, 0, 0);
+
+        if (layerImg) {
+          ctx.drawImage(layerImg, 0, 0);
+        }
       }
     }
   }
 
-  const toggle = (name) =>
-    setChecked((prev) => ({ ...prev, [name]: !prev[name] }));
+  const toggle = (name) => {
+    setChecked((prev) => ({
+      ...prev,
+      [name]: !prev[name],
+    }));
+  };
 
   return (
     <div>
       {activeClasses.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-3">
           {activeClasses.map((name) => {
-            const koName = Object.keys(EN_NAMES).find((k) => EN_NAMES[k] === name);
+            const koName = Object.keys(EN_NAMES).find(
+              (key) => EN_NAMES[key] === name
+            );
+
             const color = CLASS_COLORS[name];
             const on = checked[name];
+
             return (
               <button
                 key={name}
@@ -469,21 +532,27 @@ function GradcamView({ result, chipSize = "text-xs", canvasClass = "h-[260px]" }
           })}
         </div>
       )}
-      <div className={`w-full ${canvasClass} rounded-xl border bg-white overflow-hidden flex items-center justify-center`}>
-        <canvas ref={canvasRef} className="w-full h-full object-contain" style={{ display: "block" }} />
+
+      <div
+        className={`w-full ${canvasClass} rounded-xl border bg-white overflow-hidden flex items-center justify-center`}
+      >
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full object-contain"
+          style={{ display: "block" }}
+        />
       </div>
     </div>
   );
 }
 
-// [수정 - GradCAM 확대 모달 컴포넌트 추가]
-// 기존 단순 img 태그 확대 팝업을 GradcamView 기반 레이어 토글 모달로 교체
 function GradcamModal({ result, onClose }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6">
       <div className="bg-white rounded-3xl max-w-5xl w-full p-5 shadow-2xl">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-xl font-bold">Grad-CAM++ 확대 보기</h3>
+
           <button
             onClick={onClose}
             className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm hover:bg-slate-700 transition"
@@ -491,12 +560,16 @@ function GradcamModal({ result, onClose }) {
             닫기
           </button>
         </div>
-        <GradcamView result={result} chipSize="text-sm" canvasClass="max-h-[70vh]" />
+
+        <GradcamView
+          result={result}
+          chipSize="text-sm"
+          canvasClass="max-h-[70vh]"
+        />
       </div>
     </div>
   );
 }
-// [수정 끝]
 
 export default function App() {
   const fileRef = useRef(null);
@@ -514,7 +587,7 @@ export default function App() {
   const [selectedCompareIds, setSelectedCompareIds] = useState([]);
   const [showCompareModal, setShowCompareModal] = useState(false);
 
-  const [compareSummary, setCompareSummary] = useState("");
+  const [compareSummary, setCompareSummary] = useState(null);
   const [compareLoading, setCompareLoading] = useState(false);
 
   const [showGradcamModal, setShowGradcamModal] = useState(false);
@@ -614,16 +687,13 @@ export default function App() {
   };
 
   const saveHistory = (data, thumbnail) => {
-    // [신규 - 토글 재계산 기능] saveHistory 슬림화:
-    // gradcam_masks(흑백)만 저장하고 gradcam_layers(컬러)는 버린다.
-    // 새 GradcamView는 항상 gradcam_masks를 우선 사용하므로 컬러 PNG는 죽은 무게.
-    // 단 옛 응답(gradcam_masks 없음)이라면 폴백을 위해 gradcam_layers는 유지.
-    const hasNewMasks = !!data.gradcam_masks;
-    const historyResult = {
-      ...data,
-      gradcam_image: null, // 디버깅용 합성본 — 항상 제거 (기존 동작 유지)
-      gradcam_layers: hasNewMasks ? null : data.gradcam_layers, // 새 응답이면 컬러 버림
-    };
+  const hasNewMasks = !!data.gradcam_masks;
+
+  const historyResult = {
+    ...data,
+    gradcam_image: null,
+    gradcam_layers: hasNewMasks ? null : data.gradcam_layers,
+  };
 
     const newItem = {
       id: Date.now(),
@@ -641,17 +711,7 @@ export default function App() {
     } catch (err) {
       console.error("기록 저장 실패:", err);
 
-      const lighterHistory = [newItem, ...history]
-        .slice(0, 5)
-        .map((item) => ({
-          ...item,
-          result: {
-            ...item.result,
-            gradcam_image: null,
-            gradcam_layers: null, // 용량 초과 시 컬러 레이어도 제거
-          },
-        }));
-
+      const lighterHistory = [newItem, ...history].slice(0, 5);
       setHistory(lighterHistory);
       localStorage.setItem("analysisHistory", JSON.stringify(lighterHistory));
 
@@ -687,7 +747,7 @@ export default function App() {
     setHistory([]);
     setSelectedCompareIds([]);
     setShowCompareModal(false);
-    setCompareSummary("");
+    setCompareSummary(null);
     localStorage.removeItem("analysisHistory");
   };
 
@@ -736,7 +796,7 @@ export default function App() {
 
     try {
       setCompareLoading(true);
-      setCompareSummary("");
+      setCompareSummary(null);
 
       const payload = {
         items: compareItems.map((item) => item.result),
@@ -755,52 +815,12 @@ export default function App() {
       }
 
       const data = await res.json();
-      setCompareSummary(data.compare_summary || "");
+      setCompareSummary(data);
     } catch (err) {
       console.error("LLM 비교 설명 오류:", err);
       alert("LLM 비교 설명 생성 중 오류가 발생했습니다.");
     } finally {
       setCompareLoading(false);
-    }
-  };
-
-  const reportText = result
-    ? `
-[분석 리포트]
-
-1. 입력 조건
-- 재질: ${materialText}
-
-2. 분석 결과
-- 예측된 파손 유형: ${result.display_prediction || result.prediction}
-- 신뢰도: ${result.confidence}
-- 혼합 여부: ${result.is_mixed ? "혼합 가능성 있음" : "단일 유형 가능성 높음"}
-- 신뢰도 상태: ${result.confidence_message}
-
-3. 주요 특징
-- ${result.feature}
-
-4. 예상 원인
-- ${result.expected_cause}
-
-5. 종합 설명
-- ${result.explanation}
-
-6. 해석 의견
-- 본 결과는 업로드된 파손단면 이미지와 사용자가 선택한 재질 정보를 바탕으로 생성된 분석 결과입니다.
-- 실제 판정 시에는 추가 실험 및 전문가 검토가 필요할 수 있습니다.
-`.trim()
-    : "";
-
-  const handleCopyReport = async () => {
-    if (!reportText) return;
-
-    try {
-      await navigator.clipboard.writeText(reportText);
-      alert("분석 리포트가 복사되었습니다.");
-    } catch (err) {
-      console.error(err);
-      alert("복사에 실패했습니다.");
     }
   };
 
@@ -839,12 +859,12 @@ export default function App() {
           {history.length > 0 && (
             <div className="mb-4 p-3 rounded-xl bg-blue-50 border border-blue-100">
               <p className="text-xs text-blue-700 mb-2">
-                비교할 기록을 2~3개 선택하세요.
+                비교할 기록을 2개 선택하세요.
               </p>
 
               <button
                 onClick={() => {
-                  setCompareSummary("");
+                  setCompareSummary(null);
                   setShowCompareModal(true);
                 }}
                 disabled={selectedCompareIds.length < 2}
@@ -1023,7 +1043,10 @@ export default function App() {
 
           <section className={layout.section}>
             <div className="mb-6">
-              <h2 className="text-3xl font-bold">유사도 기반 파손 유형 비교</h2>
+              <h2 className="text-3xl font-bold">
+                유사도 기반 파손 유형 비교
+              </h2>
+
               <p className="text-slate-500 mt-2">
                 혼합 가능성이 있으면 새 카드를 추가하지 않고 상위 두 유형 카드가
                 함께 강조됩니다.
@@ -1135,9 +1158,12 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* [신규 - 토글 재계산 기능] gradcam_masks 또는 gradcam_layers 중 어느 쪽이 있어도 GradcamView가 알아서 처리 */}
                     {(result.gradcam_masks || result.gradcam_layers) ? (
-                      <GradcamView result={result} chipSize="text-xs" canvasClass="h-[260px]" />
+                      <GradcamView
+                        result={result}
+                        chipSize="text-xs"
+                        canvasClass="h-[260px]"
+                      />
                     ) : (
                       <div className="w-full h-[260px] rounded-xl border bg-white flex items-center justify-center">
                         <p className="text-slate-500 font-medium">
@@ -1145,31 +1171,7 @@ export default function App() {
                         </p>
                       </div>
                     )}
-                    {/* [신규 끝] */}
                   </div>
-                </div>
-              </div>
-            </section>
-          )}
-
-          {result && (
-            <section className="max-w-7xl mx-auto px-6 pb-12">
-              <div className={layout.card}>
-                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-                  <h3 className="text-2xl font-bold">분석 리포트</h3>
-
-                  <button
-                    onClick={handleCopyReport}
-                    className="rounded-xl bg-blue-600 text-white px-4 py-2 text-sm font-medium hover:bg-blue-700 transition"
-                  >
-                    리포트 복사
-                  </button>
-                </div>
-
-                <div className="rounded-2xl border bg-slate-50 p-5">
-                  <pre className="whitespace-pre-wrap break-keep text-slate-700 leading-7 font-sans">
-                    {reportText}
-                  </pre>
                 </div>
               </div>
             </section>
@@ -1179,7 +1181,7 @@ export default function App() {
 
       {showCompareModal && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6">
-          <div className="bg-white rounded-3xl max-w-6xl w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl">
+          <div className="bg-white rounded-3xl max-w-[70vw] w-full max-h-[90vh] overflow-y-auto p-8 shadow-2xl">
             <div className="flex items-start justify-between gap-4 mb-5">
               <div>
                 <h3 className="text-2xl font-bold">분석 결과 비교</h3>
@@ -1208,9 +1210,112 @@ export default function App() {
             </div>
 
             {compareSummary && (
-              <div className="mb-5 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-blue-800">
-                <p className="text-sm font-semibold mb-2">LLM 비교 해석</p>
-                <p className="text-sm leading-6">{compareSummary}</p>
+              <div className="mb-6 space-y-5">
+                <div className="rounded-3xl border border-blue-200 bg-blue-50 p-6 text-blue-900">
+                  <p className="text-sm font-bold mb-2">핵심 요약</p>
+
+                  <p className="text-2xl font-bold leading-9">
+                    {compareSummary.summary}
+                  </p>
+
+                  <p className="text-sm leading-6 mt-4 text-blue-700">
+                    {compareSummary.final_opinion}
+                  </p>
+                </div>
+
+                <div className="grid lg:grid-cols-2 gap-5">
+                  <div className="rounded-3xl border border-purple-200 bg-purple-50 p-5 text-purple-900">
+                    <p className="text-lg font-bold mb-4">파손 메커니즘 차이</p>
+
+                    <div className="grid grid-cols-[1fr_auto_1fr] gap-4 items-stretch">
+                      <div className="bg-white/80 rounded-2xl p-4 border border-purple-100">
+                        <p className="text-sm font-bold text-purple-700 mb-2">
+                          비교 1
+                        </p>
+
+                        <p className="text-sm leading-7">
+                          {compareSummary.mechanism_compare_1}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center justify-center">
+                        <span className="rounded-full bg-purple-500 text-white text-xs font-bold px-4 py-3">
+                          VS
+                        </span>
+                      </div>
+
+                      <div className="bg-white/80 rounded-2xl p-4 border border-purple-100">
+                        <p className="text-sm font-bold text-blue-700 mb-2">
+                          비교 2
+                        </p>
+
+                        <p className="text-sm leading-7">
+                          {compareSummary.mechanism_compare_2}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-amber-900">
+                    <p className="text-lg font-bold mb-4">
+                      신뢰도 및 해석 주의점
+                    </p>
+
+                    <div className="grid grid-cols-[1fr_auto_1fr] gap-4 items-center mb-4">
+                      <div>
+                        <p className="text-sm font-bold mb-2">비교 1</p>
+
+                        <div className="h-4 rounded-full bg-white overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-purple-500"
+                            style={{
+                              width:
+                                compareItems[0]?.result?.confidence || "0%",
+                            }}
+                          />
+                        </div>
+
+                        <p className="text-lg font-bold mt-3">
+                          {compareItems[0]?.result?.confidence}
+                        </p>
+                      </div>
+
+                      <span className="rounded-full bg-white border border-amber-200 px-4 py-3 text-xs font-bold">
+                        VS
+                      </span>
+
+                      <div>
+                        <p className="text-sm font-bold mb-2">비교 2</p>
+
+                        <div className="h-4 rounded-full bg-white overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-blue-500"
+                            style={{
+                              width:
+                                compareItems[1]?.result?.confidence || "0%",
+                            }}
+                          />
+                        </div>
+
+                        <p className="text-lg font-bold mt-3">
+                          {compareItems[1]?.result?.confidence}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-white/80 border border-amber-100 p-5">
+                      <p className="text-sm leading-7">
+                        {compareSummary.confidence_opinion}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-400">
+                  본 비교 분석은 이미지와 입력 정보를 바탕으로 한 AI 추정
+                  결과입니다. 실제 판정에는 추가 실험 및 전문가 검토가 필요할 수
+                  있습니다.
+                </p>
               </div>
             )}
 
@@ -1315,11 +1420,12 @@ export default function App() {
         </div>
       )}
 
-      {/* [수정 - 기존 단순 img 확대 모달을 GradcamModal 컴포넌트로 교체: 레이어 토글 기능 포함] */}
       {showGradcamModal && result && (
-        <GradcamModal result={result} onClose={() => setShowGradcamModal(false)} />
+        <GradcamModal
+          result={result}
+          onClose={() => setShowGradcamModal(false)}
+        />
       )}
-      {/* [수정 끝] */}
-    </div>
+          </div>
   );
 }
