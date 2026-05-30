@@ -1,7 +1,7 @@
 #이미지DB에서 이미지를 읽어와서 모델로 특징 벡터를 추출한 후
 #벡터와 이미지 경로를 각각 .npy와 .json 파일로 저장하는 스크립트
 #image_index폴더가 없거나, image_db폴더에 변경이 생길 시 실행하여 인덱스를 갱신해야 함
-
+#image_db폴더는 공용 드라이브에 업로드됨, backend폴더에 넣고 실행
 import os
 import json
 import numpy as np
