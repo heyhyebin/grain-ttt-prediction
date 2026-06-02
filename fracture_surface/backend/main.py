@@ -1,81 +1,285 @@
-import io, os
-import base64
-from typing import Optional
+# ═══════════════════════════════════════════════════════
+# 기본 라이브러리 import
+# ═══════════════════════════════════════════════════════
 
+import io
+import os
+
+import cv2
 import numpy as np
 import torch
-import cv2
-from PIL import Image
-from torchvision import transforms
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 
-from model import FractographyNet, CLASS_NAMES, KO_NAMES, CLASS_FEATURES, CLASS_CAUSES
+from PIL import Image
+
+from fastapi import FastAPI, File, UploadFile, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from torchvision import transforms
+
+
+# ═══════════════════════════════════════════════════════
+# 프로젝트 내부 모듈 import
+# ═══════════════════════════════════════════════════════
+# 유사 이미지
+from similar_search import SimilarImageSearcher
+
+# CNN 모델 로드 함수
+from model import load_model
+
+# Grad-CAM++ 관련 함수
 from gradcam import (
     GradCAMPlusPlus,
-    cam_to_mask, split_solo_overlap,
-    build_contour_image, draw_dashed_contour,
-    extract_contours_json, to_b64,
+    cam_to_mask,
+    split_solo_overlap,
+    build_contour_image,
+    draw_dashed_contour,
+    extract_contours_json,
+    to_b64,
 )
 
-# [수정 - LLM 연동]: missing된 llm_service 연동 함수 정상 임포트
-from llm_service import generate_llm_analysis, generate_compare_analysis
+# LLM 분석 함수
+from llm_service import (
+    generate_llm_analysis,
+    generate_compare_analysis,
+)
+
 
 # ═══════════════════════════════════════════════════════
-# 1. 설정
+# FastAPI 앱 생성
 # ═══════════════════════════════════════════════════════
 
-DEVICE     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-MODEL_PATH = "fractography_best.pth"
+app = FastAPI(title="Fractography Analysis API")
 
-transform = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-])
+# ═══════════════════════════════════════════════════════
+# 유사 이미지 폴더 설정
+# 프론트에서 이미지 접근 가능하도록 static 연결
+# ex) /similar_db/Fatigue/xxx.jpg
+# ═══════════════════════════════════════════════════════
 
-# [수정 - 점선 버그 해결]: 실선과 점선이 겹치는 픽셀 구분을 위해 상단에 색상 스펙 보존
-CLASS_COLORS_BGR = {
-    "Cleavage":      (245, 130, 59),
-    "Ductile":       (94,  197, 34),
-    "Fatigue":       (21,  204, 250),
-    "Intergranular": (68,  68,  239),
+SIMILAR_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "similar_db",
+)
+
+app.mount(
+    "/similar_db",
+    StaticFiles(directory=SIMILAR_DIR),
+    name="similar_db",
+)
+
+
+# ═══════════════════════════════════════════════════════
+# CORS 설정
+# React(localhost:3000)에서 API 접근 허용
+# ═══════════════════════════════════════════════════════
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ═══════════════════════════════════════════════════════
+# 디바이스 설정 (GPU 사용 가능하면 CUDA 사용)
+# ═══════════════════════════════════════════════════════
+
+DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu"
+)
+
+
+# ═══════════════════════════════════════════════════════
+# 모델 경로
+# ═══════════════════════════════════════════════════════
+
+MODEL_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "model",
+    "fractography_best5.pth",
+)
+
+
+# ═══════════════════════════════════════════════════════
+# 모델 설정값
+# ═══════════════════════════════════════════════════════
+
+IMG_SIZE = 224
+NUM_CLASSES = 4
+
+
+# CNN 클래스 이름
+CNN_CLASSES = [
+    "Cleavage",
+    "Ductile",
+    "Fatigue",
+    "Intergranular",
+]
+
+
+# 영어 → 한국어 라벨 변환
+KO_LABELS = {
+    "Cleavage": "취성 파괴",
+    "Ductile": "연성 파괴",
+    "Fatigue": "피로 파괴",
+    "Intergranular": "입계 파괴",
 }
 
+
+# 혼합 파손 판정 기준
+# top1 - top2 확률 차이가 10~15% 이내이면 혼합 가능성
+# 단, Ductile은 혼합 판정에서 제외
+MIXED_GAP_THRESHOLD = 15.0
+
+# Ductile이 단독으로 충분히 높을 때만 Ductile 인정
+DUCTILE_SINGLE_THRESHOLD = 60.0
+
 # ═══════════════════════════════════════════════════════
-# 추가/수정 유틸리티 함수
+# Grad-CAM 색상 설정
+# 클래스별 contour 색상
 # ═══════════════════════════════════════════════════════
 
-# [수정 - 점선 버그 해결]: 모든 레이어가 점선으로 뭉개지던 원본 연산 구조를 격리 버퍼 방식으로 전면 전치 수정
-def build_layer_rgba(img_rgb, name, solo_mask, overlap_mask):
+CLASS_COLORS_BGR = {
+    "Cleavage": (245, 130, 59),
+    "Ductile": (94, 197, 34),
+    "Fatigue": (21, 204, 250),
+    "Intergranular": (68, 68, 239),
+}
+
+
+# ═══════════════════════════════════════════════════════
+# CNN 모델 로드
+# ═══════════════════════════════════════════════════════
+
+model = load_model(
+    model_path=MODEL_PATH,
+    device=DEVICE,
+    num_classes=NUM_CLASSES,
+)
+
+# ═══════════════════════════════════════════════════════
+# 유사 이미지 검색 객체 생성
+# CNN feature vector 기반 유사 사례 검색
+# ═══════════════════════════════════════════════════════
+
+similar_searcher = SimilarImageSearcher(
+    model=model,
+    device=DEVICE,
+
+    # 클래스 이름
+    class_names=CNN_CLASSES,
+
+    # 유사 이미지 폴더
+    similar_dir=SIMILAR_DIR,
+
+    # feature cache 저장 파일
+    cache_path=os.path.join(
+        os.path.dirname(__file__),
+        "similar_cache.pt",
+    ),
+
+    image_size=IMG_SIZE,
+)
+
+# Grad-CAM++ 객체 생성
+gradcam_all = GradCAMPlusPlus(model)
+
+
+# ═══════════════════════════════════════════════════════
+# 이미지 전처리
+# 학습 시 사용한 방식과 동일해야 함
+# ═══════════════════════════════════════════════════════
+
+preprocess = transforms.Compose([
+    transforms.Resize(IMG_SIZE + 32),
+    transforms.CenterCrop(IMG_SIZE),
+
+    transforms.ToTensor(),
+
+    transforms.Normalize(
+        [0.485, 0.456, 0.406],
+        [0.229, 0.224, 0.225],
+    ),
+])
+
+
+# ═══════════════════════════════════════════════════════
+# Grad-CAM 레이어 생성 함수
+# 클래스별 contour만 따로 RGBA 레이어로 생성
+# ═══════════════════════════════════════════════════════
+
+def build_layer_rgba(
+    img_rgb,
+    name,
+    solo_mask,
+    overlap_mask,
+):
     H, W = img_rgb.shape[:2]
+
+    # 현재 클래스 색상
     bgr_c = CLASS_COLORS_BGR[name]
+
+    # RGBA 캔버스 생성
     canvas = np.zeros((H, W, 4), dtype=np.uint8)
 
-    # 단독 영역 (실선) 처리 전용 독립 버퍼 가동
+    # ═══════════════════════════════════
+    # 단독 영역 (실선 contour)
+    # ═══════════════════════════════════
+
     if solo_mask is not None and solo_mask.sum() > 0:
+
         tmp_solo = np.zeros((H, W, 3), dtype=np.uint8)
-        cnts, _ = cv2.findContours(solo_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        cnts, _ = cv2.findContours(
+            solo_mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+
         for cnt in cnts:
-            cv2.drawContours(tmp_solo, [cnt], -1, bgr_c, thickness=3, lineType=cv2.LINE_AA)
-        
-        # 실선이 채워진 좌표 픽셀만 정확히 마스킹
+            cv2.drawContours(
+                tmp_solo,
+                [cnt],
+                -1,
+                bgr_c,
+                thickness=3,
+                lineType=cv2.LINE_AA,
+            )
+
         solo_pixel = np.any(tmp_solo > 0, axis=2)
+
         canvas[solo_pixel, 0] = bgr_c[2]
         canvas[solo_pixel, 1] = bgr_c[1]
         canvas[solo_pixel, 2] = bgr_c[0]
         canvas[solo_pixel, 3] = 255
 
-    # 겹침 영역 (점선) 처리 전용 독립 버퍼 가동
+    # ═══════════════════════════════════
+    # 겹침 영역 (점선 contour)
+    # ═══════════════════════════════════
+
     if overlap_mask is not None and overlap_mask.sum() > 0:
+
         tmp_overlap = np.zeros((H, W, 3), dtype=np.uint8)
-        cnts, _ = cv2.findContours(overlap_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        cnts, _ = cv2.findContours(
+            overlap_mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+
         for cnt in cnts:
-            draw_dashed_contour(tmp_overlap, cnt, bgr_c, thickness=3, dash_length=12)
-        
-        # 점선이 채워진 좌표 픽셀만 타겟팅하여 알파 투명도 부여 (실선과 간섭 원천 차단)
+            draw_dashed_contour(
+                tmp_overlap,
+                cnt,
+                bgr_c,
+                thickness=3,
+                dash_length=12,
+            )
+
         overlap_pixel = np.any(tmp_overlap > 0, axis=2)
+
         canvas[overlap_pixel, 0] = bgr_c[2]
         canvas[overlap_pixel, 1] = bgr_c[1]
         canvas[overlap_pixel, 2] = bgr_c[0]
@@ -84,179 +288,517 @@ def build_layer_rgba(img_rgb, name, solo_mask, overlap_mask):
     return canvas
 
 
-# [신규 - 토글 재계산 기능]: 클래스별 이진 마스크를 흑백 PNG(base64)로 인코딩
-# 프론트가 활성 클래스 조합에 따라 단독/겹침을 즉석 재계산할 수 있도록 함.
-# 흑백 1채널 PNG라 컬러 PNG 대비 용량이 1/3~1/5로 줄어 localStorage 부담이 적음.
-def mask_to_b64_png(mask: np.ndarray) -> str:
-    """이진 마스크(0/255 uint8 2D 배열) → 흑백 PNG base64 data URL."""
-    # PIL의 "L" 모드(8-bit grayscale)로 저장 → PNG는 자동으로 1채널 최적 압축
-    pil = Image.fromarray(mask.astype(np.uint8), mode="L")
-    buf = io.BytesIO()
-    pil.save(buf, format="PNG", optimize=True)
-    b64 = base64.b64encode(buf.getvalue()).decode()
-    return f"data:image/png;base64,{b64}"
+# ═══════════════════════════════════════════════════════
+# 서버 동작 확인용 API
+# ═══════════════════════════════════════════════════════
+
+@app.get("/")
+async def root():
+
+    return {
+        "message": "Fractography API is running",
+        "model": "ConvNeXt-Small + ASPP",
+        "pth": MODEL_PATH,
+        "device": str(DEVICE),
+    }
 
 
 # ═══════════════════════════════════════════════════════
-# 2. FastAPI 앱
+# 메인 분석 API
+# 이미지 업로드 → CNN 분석 → Grad-CAM → LLM 설명 생성
 # ═══════════════════════════════════════════════════════
-
-app = FastAPI(title="Fractography Analysis API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-_model:   Optional[FractographyNet] = None
-_gradcam: Optional[GradCAMPlusPlus] = None
-
-
-@app.on_event("startup")
-def startup():
-    global _model, _gradcam
-    if not os.path.isfile(MODEL_PATH):
-        print(f"[경고] 모델 파일 없음: {MODEL_PATH}")
-        return
-    _model = FractographyNet(num_classes=4).to(DEVICE)
-    _model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-    _model.eval()
-    _gradcam = GradCAMPlusPlus(_model)
-    print(f"[startup] 모델 로드 완료 / {DEVICE}")
-
 
 @app.post("/analyze")
-async def analyze(
-    file:           UploadFile = File(...),
-    material:       str   = Form("unknown"),
-    conf_thresh:    float = Form(0.05),
+async def analyze_fracture(
+    file: UploadFile = File(...),
+
+    material: str = Form(""),
+
+    conf_thresh: float = Form(0.05),
     cam_percentile: float = Form(80.0),
     min_area_ratio: float = Form(0.005),
 ):
-    if _model is None:
-        raise HTTPException(503, detail=f"모델 파일 없음: {MODEL_PATH}")
 
-    raw     = await file.read()
-    pil_img = Image.open(io.BytesIO(raw)).convert("RGB")
-    img_rgb = np.array(pil_img)
-    H, W    = img_rgb.shape[:2]
+    print(f"요청 수신 — 재질: {material}")
 
-    x = transform(pil_img).unsqueeze(0).to(DEVICE)
-    cams_dict, probs = _gradcam.generate_all_classes(x, num_classes=4)
+    model.eval()
 
-    pred_idx  = int(probs.argmax())
-    pred_name = CLASS_NAMES[pred_idx]
-    pred_prob = float(probs[pred_idx])
+    # ═══════════════════════════════════
+    # 이미지 읽기
+    # ═══════════════════════════════════
 
-    # 마스크 생성 구간 (원본 로직 완벽 유지)
-    masks_dict = {}
-    for i, name in enumerate(CLASS_NAMES):
-        if probs[i] < conf_thresh:
-            continue
-        mask = cam_to_mask(cams_dict[i], (W, H),
-                           cam_percentile=cam_percentile,
-                           min_area_ratio=min_area_ratio)
-        if mask.sum() > 0:
-            masks_dict[name] = mask
+    image_bytes = await file.read()
 
-    if masks_dict:
-        solo_masks, overlap_masks = split_solo_overlap(masks_dict)
+    image = Image.open(
+        io.BytesIO(image_bytes)
+    ).convert("RGB")
+
+    img_rgb = np.array(image)
+
+    H, W = img_rgb.shape[:2]
+
+    # ═══════════════════════════════════
+    # 전처리 후 Tensor 변환
+    # ═══════════════════════════════════
+
+    input_tensor = preprocess(image).unsqueeze(0).to(DEVICE)
+
+    # ═══════════════════════════════════
+    # CNN 추론
+    # ═══════════════════════════════════
+
+    with torch.no_grad():
+
+        output = model(input_tensor)
+
+        probs_tensor = torch.softmax(output, dim=1)[0]
+
+    # 확률 정렬
+    sorted_probs, sorted_indices = torch.sort(
+        probs_tensor,
+        descending=True,
+    )
+
+    top1_idx = sorted_indices[0].item()
+    top2_idx = sorted_indices[1].item()
+
+    top1_percent = sorted_probs[0].item() * 100
+    top2_percent = sorted_probs[1].item() * 100
+
+    # top1 - top2 확률 차이
+    gap = top1_percent - top2_percent
+
+    # Ductile 때문에 일단 제외
+
+    # pred_en = CNN_CLASSES[top1_idx]
+
+    # prediction = KO_LABELS[pred_en]
+
+    # # ═══════════════════════════════════
+    # # 유사 이미지 검색
+    # # 예측된 유형 내부에서만 Top3 검색
+    # # ═══════════════════════════════════
+
+    # try:
+
+    #     similar_images = (
+    #         similar_searcher.find_similar_images(
+    #             image=image,
+
+    #             # 영어 클래스명 사용
+    #             predicted_class=pred_en,
+
+    #             top_k=3,
+    #         )
+    #     )
+
+    # except Exception as e:
+
+    #     print(f"유사 이미지 검색 오류: {e}")
+
+    #     similar_images = []
+
+    # top1_label = KO_LABELS[CNN_CLASSES[top1_idx]]
+    # top2_label = KO_LABELS[CNN_CLASSES[top2_idx]]
+
+    # ═══════════════════════════════════
+    # 혼합 파손 판정
+    # 교수님 기준:
+    # 1) top1-top2 차이가 15% 이하이면 혼합 가능성
+    # 2) 단, Ductile은 혼합 판정에서 제외
+    # 3) Ductile은 단독적으로 높게 나온 경우에만 Ductile로 판단
+    # ═══════════════════════════════════
+
+    top1_en = CNN_CLASSES[top1_idx]
+    top2_en = CNN_CLASSES[top2_idx]
+
+    top1_label = KO_LABELS[top1_en]
+    top2_label = KO_LABELS[top2_en]
+
+    final_en = top1_en
+    final_label = top1_label
+
+    is_mixed = False
+    highlighted_types = []
+
+    # Fatigue가 1순위면 무조건 Fatigue 단독 판정
+    if top1_en == "Fatigue":
+
+        final_en = "Fatigue"
+        final_label = KO_LABELS["Fatigue"]
+
+        is_mixed = False
+
+        highlighted_types = [final_label]
+
+        display_prediction = final_label
+
+    # Ductile이 1순위인 경우
+    elif top1_en == "Ductile":
+
+        if top1_percent >= DUCTILE_SINGLE_THRESHOLD:
+            # Ductile이 충분히 높으면 Ductile 단독 판정
+            final_en = "Ductile"
+            final_label = KO_LABELS["Ductile"]
+            is_mixed = False
+            highlighted_types = [final_label]
+            display_prediction = final_label
+
+        else:
+            # Ductile이 압도적으로 높지 않으면 2순위 유형으로 판단
+            final_en = top2_en
+            final_label = top2_label
+            is_mixed = False
+            highlighted_types = [final_label]
+            display_prediction = final_label
+
+    # Ductile이 2순위인 경우
+    elif top2_en == "Ductile":
+
+        # Ductile은 혼합에서 제외
+        final_en = top1_en
+        final_label = top1_label
+        is_mixed = False
+        highlighted_types = [final_label]
+        display_prediction = final_label
+
+    # Ductile이 포함되지 않은 경우
     else:
-        solo_masks, overlap_masks = {}, {}
 
-    gradcam_b64 = to_b64(build_contour_image(img_rgb, solo_masks, overlap_masks))
+        if gap <= MIXED_GAP_THRESHOLD:
 
-    # 클래스별 RGBA 레이어 생성 루프 (기존 — 옛 기록 호환 + 폴백용 유지)
-    gradcam_layers = {}
-    for name in CLASS_NAMES:
-        s = solo_masks.get(name,    np.zeros((H, W), dtype=np.uint8))
-        o = overlap_masks.get(name, np.zeros((H, W), dtype=np.uint8))
-        gradcam_layers[name] = to_b64(build_layer_rgba(img_rgb, name, s, o))
+            is_mixed = True
 
-    # [신규 - 토글 재계산 기능]: 클래스별 이진 마스크를 흑백 PNG로 응답에 추가
-    # 프론트는 이 마스크를 읽어 활성 클래스 조합에 따라 solo/overlap을 즉석 재계산하고
-    # canvas의 setLineDash로 실선/점선을 직접 그린다. 색상은 프론트의 CLASS_COLORS 상수 사용.
-    # masks_dict에 없는 클래스(신뢰도 미달)는 빈 마스크로 보내 일관성 유지.
-    gradcam_masks = {}
-    for name in CLASS_NAMES:
-        mask = masks_dict.get(name, np.zeros((H, W), dtype=np.uint8))
-        gradcam_masks[name] = mask_to_b64_png(mask)
+            final_en = top1_en
+            final_label = top1_label
 
-    base_image_b64   = to_b64(img_rgb)
-    gradcam_contours = extract_contours_json(masks_dict, (H, W))
+            # 혼합 판정이어도 화면에는 top1만 표시
+            highlighted_types = [top1_label]
 
-    # 혼합 / 신뢰도 판정 구간 (원본 로직 완벽 유지)
-    si        = probs.argsort()[::-1]
-    top1_name = CLASS_NAMES[si[0]]
-    top1_prob = float(probs[si[0]])
-    top2_name = CLASS_NAMES[si[1]]
-    gap       = top1_prob - float(probs[si[1]])
-    is_mixed  = gap < 0.15
+            display_prediction = top1_label
 
-    highlighted = [KO_NAMES[top1_name]] + ([KO_NAMES[top2_name]] if is_mixed else [])
+        else:
+            is_mixed = False
+            final_en = top1_en
+            final_label = top1_label
+            highlighted_types = [final_label]
+            display_prediction = final_label
 
-    if pred_prob >= 0.75:
-        conf_status = "high"
-    elif pred_prob >= 0.50:
-        conf_status = "medium"
+    pred_en = final_en
+    prediction = final_label
+
+    # 최종 판정된 유형의 신뢰도
+    if final_en == top1_en:
+        final_percent = top1_percent
     else:
-        conf_status = "low"
+        final_percent = top2_percent
 
-    similarities = {KO_NAMES[n]: f"{float(probs[i]):.1%}" for i, n in enumerate(CLASS_NAMES)}
+    confidence = f"{final_percent:.1f}%"
 
-    # [수정 - LLM 연동]: 임포트한 대형언어모델 분석 모듈 정상 동기화 가동 및 호출문 안착
+    # ═══════════════════════════════════
+    # 유사 이미지 검색
+    # 최종 판정된 유형 내부에서만 Top3 검색
+    # ═══════════════════════════════════
+
+    try:
+
+        similar_images = (
+            similar_searcher.find_similar_images(
+                image=image,
+
+                # 최종 영어 클래스명 사용
+                predicted_class=pred_en,
+
+                top_k=3,
+            )
+        )
+
+    except Exception as e:
+
+        print(f"유사 이미지 검색 오류: {e}")
+
+        similar_images = []
+
+    # ═══════════════════════════════════
+    # 신뢰도 상태 분류
+    # ═══════════════════════════════════
+
+    if final_percent >= 80 and not is_mixed:
+
+        confidence_status = "high"
+
+        confidence_message = (
+            "현재 분석은 신뢰할 수 있는 결과입니다."
+        )
+
+    elif final_percent >= 60:
+
+        confidence_status = "medium"
+
+        confidence_message = (
+            "상위 두 유형의 확률 차이가 크지 않아 "
+            "혼합 파손 가능성을 함께 확인해야 합니다."
+            if is_mixed
+            else "결과 해석에 주의가 필요합니다."
+        )
+
+    else:
+
+        confidence_status = "low"
+
+        confidence_message = (
+            "신뢰도가 낮아 오분류 가능성이 있습니다. "
+            "추가 이미지나 전문가 검토가 필요할 수 있습니다."
+        )
+
+    # ═══════════════════════════════════
+    # 클래스별 확률 정리
+    # ═══════════════════════════════════
+
+    similarities = {
+        KO_LABELS[CNN_CLASSES[i]]:
+        f"{probs_tensor[i].item() * 100:.1f}%"
+
+        for i in range(len(CNN_CLASSES))
+    }
+
+    # ═══════════════════════════════════
+    # LLM 설명 생성
+    # ═══════════════════════════════════
+
     llm_result = generate_llm_analysis(
-        prediction=KO_NAMES[pred_name],
-        confidence_percent=pred_prob * 100,
+        prediction=prediction,
+        confidence_percent=final_percent,
         material=material,
     )
 
-    return {
-        "prediction":         pred_name,
-        "display_prediction": f"{KO_NAMES[pred_name]} ({pred_name})",
-        "confidence":         f"{pred_prob:.1%}",
-        "confidence_status":  conf_status,
-        "confidence_message": llm_result["explanation"],  # [수정 - LLM 연동]: 동적 LLM 분석 설명문 매핑
-        "is_mixed":           is_mixed,
-        "top1_type":          KO_NAMES[top1_name],
-        "top2_type":          KO_NAMES[top2_name],
-        "mixed_gap":          f"{gap:.1%}p",
-        "highlighted_types":  highlighted,
-        "similarities":       similarities,
-        "feature":            llm_result["feature"],          # [수정 - LLM 연동]: 하드코딩 맵 대신 LLM 추출 정보 매핑
-        "expected_cause":     llm_result["expected_cause"],   # [수정 - LLM 연동]: 하드코딩 맵 대신 LLM 추출 정보 매핑
-        "explanation":        llm_result["explanation"],      # [수정 - LLM 연동]: 하드코딩 맵 대신 LLM 추출 정보 매핑
-        "material":           material,
-        "gradcam_image":      gradcam_b64,
-        "gradcam_layers":     gradcam_layers,
-        "gradcam_masks":      gradcam_masks,   # [신규 - 토글 재계산 기능]: 클래스별 흑백 마스크 PNG
-        "base_image":         base_image_b64,
-        "gradcam_contours":   gradcam_contours,
-        "llm_analysis":       llm_result,
-    }
+    # ═══════════════════════════════════
+    # Grad-CAM 초기값
+    # ═══════════════════════════════════
 
+    gradcam_image = None
+    gradcam_layers = {}
+    base_image = None
+    gradcam_contours = {}
 
-# [수정 - LLM 연동]: 누락되었던 /compare 다중 리포트 연동 엔드포인트 누락 없이 보존 통합
-@app.post("/compare")
-async def compare_analysis(payload: dict):
-    items = payload.get("items", [])
-
-    if len(items) < 2:
-        return {
-            "compare_summary": "비교하려면 최소 2개의 분석 결과가 필요합니다."
-        }
+    # ═══════════════════════════════════
+    # Grad-CAM 생성
+    # ═══════════════════════════════════
 
     try:
-        compare_summary = generate_compare_analysis(items)
-    except Exception as e:
-        print(f"비교 설명 생성 오류: {e}")
-        compare_summary = (
-            "선택한 분석 결과들은 파손 유형, 신뢰도, 재질, 주요 특징에서 차이가 있습니다. "
-            "신뢰도가 낮은 결과는 추가 이미지나 전문가 검토가 필요할 수 있으며, "
-            "각 결과는 단일 판단보다 비교 관점에서 함께 해석하는 것이 좋습니다."
+
+        cams_dict, probs_np = (
+            gradcam_all.generate_all_classes(
+                input_tensor,
+                num_classes=NUM_CLASSES,
+            )
         )
 
+        masks_dict = {}
+
+        for i, name in enumerate(CNN_CLASSES):
+
+            if probs_np[i] < conf_thresh:
+                continue
+
+            mask = cam_to_mask(
+                cams_dict[i],
+                (W, H),
+                cam_percentile=cam_percentile,
+                min_area_ratio=min_area_ratio,
+            )
+
+            if mask.sum() > 0:
+                masks_dict[name] = mask
+
+        # 단독 영역 / 겹침 영역 분리
+        if masks_dict:
+
+            solo_masks, overlap_masks = (
+                split_solo_overlap(masks_dict)
+            )
+
+        else:
+
+            solo_masks, overlap_masks = {}, {}
+
+        # 전체 contour 이미지 생성
+        gradcam_image = to_b64(
+            build_contour_image(
+                img_rgb,
+                solo_masks,
+                overlap_masks,
+            )
+        )
+
+        # 클래스별 레이어 생성
+        for name in CNN_CLASSES:
+
+            solo_mask = solo_masks.get(
+                name,
+                np.zeros((H, W), dtype=np.uint8),
+            )
+
+            overlap_mask = overlap_masks.get(
+                name,
+                np.zeros((H, W), dtype=np.uint8),
+            )
+
+            gradcam_layers[name] = to_b64(
+                build_layer_rgba(
+                    img_rgb,
+                    name,
+                    solo_mask,
+                    overlap_mask,
+                )
+            )
+
+        base_image = to_b64(img_rgb)
+
+        gradcam_contours = extract_contours_json(
+            masks_dict,
+            (H, W),
+        )
+
+    except Exception as e:
+
+        print(f"Grad-CAM++ 레이어 생성 오류: {e}")
+
+    # ═══════════════════════════════════
+    # 최종 응답 반환
+    # ═══════════════════════════════════
+
     return {
-        "compare_summary": compare_summary
+
+        "prediction": prediction,
+        "prediction_en": pred_en,
+
+        "display_prediction": display_prediction,
+
+        "confidence": confidence,
+        "similarities": similarities,
+
+        "is_mixed": is_mixed,
+        "mixed_gap": f"{gap:.1f}%",
+
+        "top1_type": top1_label,
+        "top2_type": top2_label,
+
+        "highlighted_types": highlighted_types,
+
+        "feature": llm_result["feature"],
+
+        "cause": llm_result.get(
+            "cause",
+            llm_result.get("expected_cause", ""),
+        ),
+
+        "expected_cause": llm_result["expected_cause"],
+
+        "explanation": llm_result["explanation"],
+
+        "llm_analysis": llm_result,
+
+        "material": material,
+
+        "confidence_status": confidence_status,
+        "confidence_message": confidence_message,
+
+        "gradcam_image": gradcam_image,
+        "gradcam_layers": gradcam_layers,
+
+        "base_image": base_image,
+
+        "gradcam_contours": gradcam_contours,
+
+        "similar_images": similar_images,
     }
 
 
+# ═══════════════════════════════════════════════════════
+# 결과 비교 API
+# 여러 분석 결과를 LLM으로 비교
+# ═══════════════════════════════════════════════════════
+
+@app.post("/compare")
+async def compare_analysis(payload: dict):
+
+    items = payload.get("items", [])
+
+    # 최소 2개 필요
+    if len(items) < 2:
+
+        return {
+            "type_difference":
+            "비교하려면 최소 2개의 분석 결과가 필요합니다.",
+
+            "confidence_difference": "",
+            "cause_difference": "",
+            "final_opinion": "",
+
+            "compare_summary":
+            "비교하려면 최소 2개의 분석 결과가 필요합니다.",
+        }
+
+    # LLM 비교 생성
+    try:
+
+        compare_result = generate_compare_analysis(items)
+
+    except Exception as e:
+
+        print(f"비교 설명 생성 오류: {e}")
+
+        compare_result = {
+            "type_difference":
+            "선택한 결과들은 예측된 파손 유형에서 차이가 있을 수 있습니다.",
+
+            "confidence_difference":
+            "신뢰도 차이에 따라 해석 우선순위를 다르게 볼 필요가 있습니다.",
+
+            "cause_difference":
+            "예상 원인은 각 파손 유형의 특징에 따라 다르게 해석될 수 있습니다.",
+
+            "final_opinion":
+            "두 결과는 함께 비교해서 보되, "
+            "실제 판단에는 추가 이미지나 전문가 검토가 필요할 수 있습니다.",
+        }
+
+    # 문자열만 반환된 경우 처리
+    if isinstance(compare_result, str):
+
+        return {
+            "type_difference": "",
+            "confidence_difference": "",
+            "cause_difference": "",
+
+            "final_opinion": compare_result,
+
+            "compare_summary": compare_result,
+        }
+
+    # 최종 요약
+    compare_result["compare_summary"] = (
+        compare_result.get(
+            "final_opinion",
+            "분석 결과 비교가 완료되었습니다.",
+        )
+    )
+
+    return compare_result
+
+
+# ═══════════════════════════════════════════════════════
+# 직접 실행 시 FastAPI 서버 실행
+# ═══════════════════════════════════════════════════════
+
 if __name__ == "__main__":
+
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+    )
