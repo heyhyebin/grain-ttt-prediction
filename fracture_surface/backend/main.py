@@ -128,13 +128,27 @@ KO_LABELS = {
 }
 
 
-# 혼합 파손 판정 기준
-# top1 - top2 확률 차이가 10~15% 이내이면 혼합 가능성
-# 단, Ductile은 혼합 판정에서 제외
-MIXED_GAP_THRESHOLD = 15.0
+# ═══════════════════════════════════════════════════════
+# [신규 - 도메인 우선순위 룰]
+# GradCAM에 잡힌 클래스 후보들 중 이 순서대로 우선순위를 매겨
+# 가장 높은 클래스를 최종 단일 유형으로 결정한다.
+# 도메인 전문가(교수님) 피드백 반영:
+#   - Fatigue: 반복 하중의 근본 원인 신호 → 최우선
+#   - Cleavage: 위험한 취성 거동 신호 → 차순위
+#   - Intergranular: 재료 열화 신호
+#   - Ductile: 정상 과하중 모드 → 최후순위
+# ═══════════════════════════════════════════════════════
+PRIORITY = ["Fatigue", "Cleavage", "Intergranular", "Ductile"]
 
-# Ductile이 단독으로 충분히 높을 때만 Ductile 인정
-DUCTILE_SINGLE_THRESHOLD = 60.0
+
+# ═══════════════════════════════════════════════════════
+# [주석처리 - 구 혼합 판정용 임계값]
+# 우선순위 룰 도입으로 더 이상 사용하지 않음.
+# 향후 혼합 판정 방식으로 돌아갈 경우 참조용으로 보존.
+# ═══════════════════════════════════════════════════════
+# MIXED_GAP_THRESHOLD = 15.0       # top1-top2 차이 임계값 (혼합 판정용)
+# DUCTILE_SINGLE_THRESHOLD = 60.0  # Ductile 단독 판정 임계값
+
 
 # ═══════════════════════════════════════════════════════
 # Grad-CAM 색상 설정
@@ -305,7 +319,9 @@ async def root():
 
 # ═══════════════════════════════════════════════════════
 # 메인 분석 API
-# 이미지 업로드 → CNN 분석 → Grad-CAM → LLM 설명 생성
+# 이미지 업로드 → CNN 분석 → Grad-CAM → 우선순위 룰 → LLM 설명 생성
+# [수정] GradCAM 블록이 prediction 결정보다 앞으로 이동.
+#        우선순위 룰이 masks_dict에 의존하기 때문.
 # ═══════════════════════════════════════════════════════
 
 @app.post("/analyze")
@@ -353,7 +369,7 @@ async def analyze_fracture(
 
         probs_tensor = torch.softmax(output, dim=1)[0]
 
-    # 확률 정렬
+    # 확률 정렬 (참고용 — top1/top2 정보는 응답에 함께 보냄)
     sorted_probs, sorted_indices = torch.sort(
         probs_tensor,
         descending=True,
@@ -365,49 +381,8 @@ async def analyze_fracture(
     top1_percent = sorted_probs[0].item() * 100
     top2_percent = sorted_probs[1].item() * 100
 
-    # top1 - top2 확률 차이
+    # softmax 기준 top1 vs top2 차이 (참고 정보용으로만 응답에 포함)
     gap = top1_percent - top2_percent
-
-    # Ductile 때문에 일단 제외
-
-    # pred_en = CNN_CLASSES[top1_idx]
-
-    # prediction = KO_LABELS[pred_en]
-
-    # # ═══════════════════════════════════
-    # # 유사 이미지 검색
-    # # 예측된 유형 내부에서만 Top3 검색
-    # # ═══════════════════════════════════
-
-    # try:
-
-    #     similar_images = (
-    #         similar_searcher.find_similar_images(
-    #             image=image,
-
-    #             # 영어 클래스명 사용
-    #             predicted_class=pred_en,
-
-    #             top_k=3,
-    #         )
-    #     )
-
-    # except Exception as e:
-
-    #     print(f"유사 이미지 검색 오류: {e}")
-
-    #     similar_images = []
-
-    # top1_label = KO_LABELS[CNN_CLASSES[top1_idx]]
-    # top2_label = KO_LABELS[CNN_CLASSES[top2_idx]]
-
-    # ═══════════════════════════════════
-    # 혼합 파손 판정
-    # 교수님 기준:
-    # 1) top1-top2 차이가 15% 이하이면 혼합 가능성
-    # 2) 단, Ductile은 혼합 판정에서 제외
-    # 3) Ductile은 단독적으로 높게 나온 경우에만 Ductile로 판단
-    # ═══════════════════════════════════
 
     top1_en = CNN_CLASSES[top1_idx]
     top2_en = CNN_CLASSES[top2_idx]
@@ -415,175 +390,17 @@ async def analyze_fracture(
     top1_label = KO_LABELS[top1_en]
     top2_label = KO_LABELS[top2_en]
 
-    final_en = top1_en
-    final_label = top1_label
-
-    is_mixed = False
-    highlighted_types = []
-
-    # Fatigue가 1순위면 무조건 Fatigue 단독 판정
-    if top1_en == "Fatigue":
-
-        final_en = "Fatigue"
-        final_label = KO_LABELS["Fatigue"]
-
-        is_mixed = False
-
-        highlighted_types = [final_label]
-
-        display_prediction = final_label
-
-    # Ductile이 1순위인 경우
-    elif top1_en == "Ductile":
-
-        if top1_percent >= DUCTILE_SINGLE_THRESHOLD:
-            # Ductile이 충분히 높으면 Ductile 단독 판정
-            final_en = "Ductile"
-            final_label = KO_LABELS["Ductile"]
-            is_mixed = False
-            highlighted_types = [final_label]
-            display_prediction = final_label
-
-        else:
-            # Ductile이 압도적으로 높지 않으면 2순위 유형으로 판단
-            final_en = top2_en
-            final_label = top2_label
-            is_mixed = False
-            highlighted_types = [final_label]
-            display_prediction = final_label
-
-    # Ductile이 2순위인 경우
-    elif top2_en == "Ductile":
-
-        # Ductile은 혼합에서 제외
-        final_en = top1_en
-        final_label = top1_label
-        is_mixed = False
-        highlighted_types = [final_label]
-        display_prediction = final_label
-
-    # Ductile이 포함되지 않은 경우
-    else:
-
-        if gap <= MIXED_GAP_THRESHOLD:
-
-            is_mixed = True
-
-            final_en = top1_en
-            final_label = top1_label
-
-            # 혼합 판정이어도 화면에는 top1만 표시
-            highlighted_types = [top1_label]
-
-            display_prediction = top1_label
-
-        else:
-            is_mixed = False
-            final_en = top1_en
-            final_label = top1_label
-            highlighted_types = [final_label]
-            display_prediction = final_label
-
-    pred_en = final_en
-    prediction = final_label
-
-    # 최종 판정된 유형의 신뢰도
-    if final_en == top1_en:
-        final_percent = top1_percent
-    else:
-        final_percent = top2_percent
-
-    confidence = f"{final_percent:.1f}%"
-
-    # ═══════════════════════════════════
-    # 유사 이미지 검색
-    # 최종 판정된 유형 내부에서만 Top3 검색
-    # ═══════════════════════════════════
-
-    try:
-
-        similar_images = (
-            similar_searcher.find_similar_images(
-                image=image,
-
-                # 최종 영어 클래스명 사용
-                predicted_class=pred_en,
-
-                top_k=3,
-            )
-        )
-
-    except Exception as e:
-
-        print(f"유사 이미지 검색 오류: {e}")
-
-        similar_images = []
-
-    # ═══════════════════════════════════
-    # 신뢰도 상태 분류
-    # ═══════════════════════════════════
-
-    if final_percent >= 80 and not is_mixed:
-
-        confidence_status = "high"
-
-        confidence_message = (
-            "현재 분석은 신뢰할 수 있는 결과입니다."
-        )
-
-    elif final_percent >= 60:
-
-        confidence_status = "medium"
-
-        confidence_message = (
-            "상위 두 유형의 확률 차이가 크지 않아 "
-            "혼합 파손 가능성을 함께 확인해야 합니다."
-            if is_mixed
-            else "결과 해석에 주의가 필요합니다."
-        )
-
-    else:
-
-        confidence_status = "low"
-
-        confidence_message = (
-            "신뢰도가 낮아 오분류 가능성이 있습니다. "
-            "추가 이미지나 전문가 검토가 필요할 수 있습니다."
-        )
-
-    # ═══════════════════════════════════
-    # 클래스별 확률 정리
-    # ═══════════════════════════════════
-
-    similarities = {
-        KO_LABELS[CNN_CLASSES[i]]:
-        f"{probs_tensor[i].item() * 100:.1f}%"
-
-        for i in range(len(CNN_CLASSES))
-    }
-
-    # ═══════════════════════════════════
-    # LLM 설명 생성
-    # ═══════════════════════════════════
-
-    llm_result = generate_llm_analysis(
-        prediction=prediction,
-        confidence_percent=final_percent,
-        material=material,
-    )
-
-    # ═══════════════════════════════════
-    # Grad-CAM 초기값
-    # ═══════════════════════════════════
+    # ═══════════════════════════════════════════════════════
+    # [수정 - 순서 재배치] Grad-CAM 먼저 생성
+    # 우선순위 룰이 masks_dict 정보에 의존하므로
+    # prediction 결정 전에 GradCAM을 만들어야 한다.
+    # ═══════════════════════════════════════════════════════
 
     gradcam_image = None
     gradcam_layers = {}
     base_image = None
     gradcam_contours = {}
-
-    # ═══════════════════════════════════
-    # Grad-CAM 생성
-    # ═══════════════════════════════════
+    masks_dict = {}
 
     try:
 
@@ -593,8 +410,6 @@ async def analyze_fracture(
                 num_classes=NUM_CLASSES,
             )
         )
-
-        masks_dict = {}
 
         for i, name in enumerate(CNN_CLASSES):
 
@@ -663,9 +478,127 @@ async def analyze_fracture(
     except Exception as e:
 
         print(f"Grad-CAM++ 레이어 생성 오류: {e}")
+        # masks_dict는 빈 채로 폴백 로직으로 진행
+
+    # ═══════════════════════════════════════════════════════
+    # [신규] 우선순위 룰 기반 단일 분류 결정
+    #
+    # 1. GradCAM에 잡힌 클래스(masks_dict의 키)만 후보로 본다.
+    # 2. PRIORITY = [Fatigue, Cleavage, Intergranular, Ductile]
+    #    순서로 우선순위가 높은 클래스를 최종 분류로 선택한다.
+    # 3. 만약 GradCAM이 어떤 클래스도 잡지 못한 드문 경우에는
+    #    softmax argmax로 폴백한다.
+    # ═══════════════════════════════════════════════════════
+
+    if masks_dict:
+        detected = [name for name in PRIORITY if name in masks_dict]
+        if detected:
+            final_en = detected[0]
+        else:
+            # masks_dict에 있는 클래스가 모두 PRIORITY에 없는 비정상 케이스
+            # (현재 클래스 구성에서는 발생 안 함, 방어적 처리)
+            final_en = CNN_CLASSES[int(probs_tensor.argmax().item())]
+    else:
+        # GradCAM이 어느 클래스도 임계값 통과 못한 경우 → argmax 폴백
+        print("[경고] GradCAM에 잡힌 클래스 없음 → softmax argmax 폴백")
+        final_en = CNN_CLASSES[int(probs_tensor.argmax().item())]
+
+    final_label = KO_LABELS[final_en]
+    final_idx = CNN_CLASSES.index(final_en)
+    final_percent = probs_tensor[final_idx].item() * 100
+
+    # 혼합 개념 제거 — 항상 단일
+    is_mixed = False
+    highlighted_types = [final_label]
+    display_prediction = final_label
+
+    pred_en = final_en
+    prediction = final_label
+
+    confidence = f"{final_percent:.1f}%"
+
+    # ═══════════════════════════════════
+    # 유사 이미지 검색
+    # 최종 판정된 유형 내부에서만 Top3 검색
+    # ═══════════════════════════════════
+
+    try:
+
+        similar_images = (
+            similar_searcher.find_similar_images(
+                image=image,
+
+                # 최종 영어 클래스명 사용
+                predicted_class=pred_en,
+
+                top_k=3,
+            )
+        )
+
+    except Exception as e:
+
+        print(f"유사 이미지 검색 오류: {e}")
+
+        similar_images = []
+
+    # ═══════════════════════════════════
+    # 신뢰도 상태 분류
+    # [수정] is_mixed가 항상 False가 되어
+    # 기존의 "혼합 가능성" 메시지 분기는 자동으로 죽음.
+    # 단일 유형 기준의 메시지로 정리.
+    # ═══════════════════════════════════
+
+    if final_percent >= 80:
+
+        confidence_status = "high"
+
+        confidence_message = (
+            "현재 분석은 신뢰할 수 있는 결과입니다."
+        )
+
+    elif final_percent >= 60:
+
+        confidence_status = "medium"
+
+        confidence_message = (
+            "결과 해석에 주의가 필요합니다."
+        )
+
+    else:
+
+        confidence_status = "low"
+
+        confidence_message = (
+            "신뢰도가 낮아 오분류 가능성이 있습니다. "
+            "추가 이미지나 전문가 검토가 필요할 수 있습니다."
+        )
+
+    # ═══════════════════════════════════
+    # 클래스별 확률 정리 (카드의 유사도 표시용 — softmax 그대로)
+    # ═══════════════════════════════════
+
+    similarities = {
+        KO_LABELS[CNN_CLASSES[i]]:
+        f"{probs_tensor[i].item() * 100:.1f}%"
+
+        for i in range(len(CNN_CLASSES))
+    }
+
+    # ═══════════════════════════════════
+    # LLM 설명 생성 (최종 판정된 유형 기준)
+    # ═══════════════════════════════════
+
+    llm_result = generate_llm_analysis(
+        prediction=prediction,
+        confidence_percent=final_percent,
+        material=material,
+    )
 
     # ═══════════════════════════════════
     # 최종 응답 반환
+    # [참고] is_mixed/top1_type/top2_type/mixed_gap 키는
+    # 프론트엔드 호환성을 위해 유지하되, is_mixed는 항상 False.
+    # top1/top2는 softmax 기준 정보로 그대로 응답.
     # ═══════════════════════════════════
 
     return {
