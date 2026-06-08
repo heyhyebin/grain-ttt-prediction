@@ -129,25 +129,53 @@ KO_LABELS = {
 
 
 # ═══════════════════════════════════════════════════════
-# [신규 - 도메인 우선순위 룰]
-# GradCAM에 잡힌 클래스 후보들 중 이 순서대로 우선순위를 매겨
-# 가장 높은 클래스를 최종 단일 유형으로 결정한다.
-# 도메인 전문가(교수님) 피드백 반영:
-#   - Fatigue: 반복 하중의 근본 원인 신호 → 최우선
-#   - Cleavage: 위험한 취성 거동 신호 → 차순위
-#   - Intergranular: 재료 열화 신호
-#   - Ductile: 정상 과하중 모드 → 최후순위
+# [신규 - Ductile 우선 + 박빙 시 우선순위 룰]
+# 교수님 피드백 재해석 반영:
+#   "Ductile 확률이 매우 클 경우에만 Ductile로 분류,
+#    나머지는 확률 차이가 10% 미만으로 박빙일 때 우선순위 적용"
+#
+# 알고리즘:
+#   STEP 1: prob[Ductile] ≥ DUCTILE_DOMINANT 이면 Ductile 단독 분류
+#   STEP 2: GradCAM 통과 클래스만 후보 (없으면 argmax 폴백)
+#   STEP 3: 후보 확률 내림차순 정렬 후
+#           top1-top2 ≥ GAP_THRESHOLD → top1 선택
+#           top1-top2 <  GAP_THRESHOLD → 박빙 → 우선순위 적용
+#
+# 우선순위 (Cleavage = Intergranular 동순위, 동순위는 박빙 그룹 내 확률 우선):
+#   Fatigue > Cleavage = Intergranular > Ductile
+#
+# 도메인 의미:
+#   - Ductile은 모든 파단면에 흔히 나타나는 정상 거동.
+#     매우 강한 신호(≥60%)일 때만 주된 모드로 인정.
+#   - 그 외에는 시각적 근거 있는(GradCAM) 클래스들 중에서
+#     압도적 1등이 있으면 그것, 박빙이면 도메인 위험도 순으로 우선.
 # ═══════════════════════════════════════════════════════
-PRIORITY = ["Fatigue", "Cleavage", "Intergranular", "Ductile"]
+
+# Ductile 단독 분류 임계값 (매우 클 때만 Ductile)
+DUCTILE_DOMINANT = 0.60
+
+# 박빙 판정 임계값 (top1-top2 차이가 이 값 미만이면 박빙)
+GAP_THRESHOLD = 0.10
+
+# 도메인 우선순위 (높은 → 낮은). 같은 튜플은 동순위.
+# 동순위 그룹은 박빙 그룹 내 확률 더 높은 것이 우선.
+PRIORITY_GROUPS = [
+    ("Fatigue",),                  # 1순위: 반복 하중 근본 원인
+    ("Cleavage", "Intergranular"), # 2순위(동순위): 위험·열화 신호
+    ("Ductile",),                  # 3순위: 정상 거동
+]
 
 
 # ═══════════════════════════════════════════════════════
-# [주석처리 - 구 혼합 판정용 임계값]
-# 우선순위 룰 도입으로 더 이상 사용하지 않음.
-# 향후 혼합 판정 방식으로 돌아갈 경우 참조용으로 보존.
+# [주석처리 - 이전 룰 임계값들]
+# 새 룰 도입으로 더 이상 사용하지 않음.
+# 향후 방식 변경 시 참조용으로 보존.
 # ═══════════════════════════════════════════════════════
 # MIXED_GAP_THRESHOLD = 15.0       # top1-top2 차이 임계값 (혼합 판정용)
 # DUCTILE_SINGLE_THRESHOLD = 60.0  # Ductile 단독 판정 임계값
+# PRIORITY = ["Fatigue", "Cleavage", "Intergranular", "Ductile"]  # 단일 우선순위 룰
+# T_DUCTILE = 0.75   # 비대칭 임계값 룰: Ductile 검출 임계값
+# T_OTHERS  = 0.15   # 비대칭 임계값 룰: 나머지 3개 검출 임계값
 
 
 # ═══════════════════════════════════════════════════════
@@ -319,9 +347,9 @@ async def root():
 
 # ═══════════════════════════════════════════════════════
 # 메인 분석 API
-# 이미지 업로드 → CNN 분석 → Grad-CAM → 우선순위 룰 → LLM 설명 생성
+# 이미지 업로드 → CNN 분석 → Grad-CAM → Ductile 우선+박빙 우선순위 룰 → LLM 설명 생성
 # [수정] GradCAM 블록이 prediction 결정보다 앞으로 이동.
-#        우선순위 룰이 masks_dict에 의존하기 때문.
+#        결정 룰이 GradCAM 통과 정보(masks_dict)에 의존하기 때문.
 # ═══════════════════════════════════════════════════════
 
 @app.post("/analyze")
@@ -481,31 +509,104 @@ async def analyze_fracture(
         # masks_dict는 빈 채로 폴백 로직으로 진행
 
     # ═══════════════════════════════════════════════════════
-    # [신규] 우선순위 룰 기반 단일 분류 결정
+    # [신규] Ductile 우선 + 박빙 시 우선순위 룰
     #
-    # 1. GradCAM에 잡힌 클래스(masks_dict의 키)만 후보로 본다.
-    # 2. PRIORITY = [Fatigue, Cleavage, Intergranular, Ductile]
-    #    순서로 우선순위가 높은 클래스를 최종 분류로 선택한다.
-    # 3. 만약 GradCAM이 어떤 클래스도 잡지 못한 드문 경우에는
-    #    softmax argmax로 폴백한다.
+    # STEP 1: Ductile 압도 검사
+    #   prob[Ductile] ≥ DUCTILE_DOMINANT(60%) 이면 → Ductile 단독 분류
+    #
+    # STEP 2: GradCAM 통과 클래스 후보 추출
+    #   masks_dict가 비어있으면 → softmax argmax 폴백
+    #
+    # STEP 3: 후보 확률 내림차순 정렬 → 박빙 여부로 분기
+    #   top1 - top2 ≥ GAP_THRESHOLD(10%p) → top1 선택 (압도)
+    #   top1 - top2 <  GAP_THRESHOLD       → 박빙 → 우선순위 적용
+    #     박빙 그룹: top1과의 차이가 GAP 이내인 모든 후보
+    #     우선순위: Fatigue > (Cleavage = Intergranular) > Ductile
+    #     동순위 그룹은 박빙 그룹 내 확률 더 높은 것이 우선
+    #
+    # 도메인 의미:
+    #   "Ductile은 매우 클 때만 인정, 그 외에는 시각적 근거 있는 클래스 중
+    #    압도적이면 그것, 박빙이면 위험도 순으로 보고"
     # ═══════════════════════════════════════════════════════
 
-    if masks_dict:
-        detected = [name for name in PRIORITY if name in masks_dict]
-        if detected:
-            final_en = detected[0]
-        else:
-            # masks_dict에 있는 클래스가 모두 PRIORITY에 없는 비정상 케이스
-            # (현재 클래스 구성에서는 발생 안 함, 방어적 처리)
-            final_en = CNN_CLASSES[int(probs_tensor.argmax().item())]
+    ductile_prob = probs_tensor[CNN_CLASSES.index("Ductile")].item()
+
+    if ductile_prob >= DUCTILE_DOMINANT:
+        # STEP 1: Ductile 압도 → 무조건 Ductile
+        final_en = "Ductile"
+        decision_path = f"STEP 1 (Ductile {ductile_prob*100:.1f}% ≥ {DUCTILE_DOMINANT*100:.0f}%)"
+
     else:
-        # GradCAM이 어느 클래스도 임계값 통과 못한 경우 → argmax 폴백
-        print("[경고] GradCAM에 잡힌 클래스 없음 → softmax argmax 폴백")
-        final_en = CNN_CLASSES[int(probs_tensor.argmax().item())]
+        # STEP 2: GradCAM 통과 클래스만 후보로
+        candidates = [
+            (name, probs_tensor[CNN_CLASSES.index(name)].item())
+            for name in CNN_CLASSES
+            if name in masks_dict
+        ]
+
+        if not candidates:
+            # GradCAM 0개 통과 → 폴백
+            final_en = CNN_CLASSES[int(probs_tensor.argmax().item())]
+            decision_path = "STEP 2 폴백 (GradCAM 통과 클래스 없음 → argmax)"
+            print("[경고] GradCAM 통과 클래스 없음 → softmax argmax 폴백")
+
+        else:
+            # STEP 3: 확률 내림차순 정렬
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            top1_name, top1_prob = candidates[0]
+
+            if len(candidates) == 1:
+                # 후보 1개 → 그대로 선택
+                final_en = top1_name
+                decision_path = f"STEP 3 단일 후보 ({top1_name})"
+
+            else:
+                top2_prob = candidates[1][1]
+                gap_top12 = top1_prob - top2_prob
+
+                if gap_top12 >= GAP_THRESHOLD:
+                    # 압도 → top1 선택
+                    final_en = top1_name
+                    decision_path = (
+                        f"STEP 3 압도 (차이 {gap_top12*100:.1f}%p ≥ "
+                        f"{GAP_THRESHOLD*100:.0f}%p)"
+                    )
+
+                else:
+                    # 박빙 → 우선순위 적용
+                    # 박빙 그룹: top1과 차이가 GAP_THRESHOLD 미만인 모든 후보
+                    close_group = [
+                        (name, prob) for name, prob in candidates
+                        if (top1_prob - prob) < GAP_THRESHOLD
+                    ]
+                    close_names = {n for n, _ in close_group}
+
+                    # 우선순위 그룹 순회 — 동순위 안에서는 확률 더 높은 것 선택
+                    final_en = None
+                    for group in PRIORITY_GROUPS:
+                        in_group = [
+                            (n, p) for n, p in close_group if n in group
+                        ]
+                        if in_group:
+                            # 동순위 내 확률 최댓값
+                            in_group.sort(key=lambda x: x[1], reverse=True)
+                            final_en = in_group[0][0]
+                            break
+
+                    if final_en is None:
+                        # 모든 우선순위에 없는 비정상 케이스 (방어적 처리)
+                        final_en = top1_name
+
+                    decision_path = (
+                        f"STEP 3 박빙 우선순위 (박빙 {len(close_group)}개, "
+                        f"선택: {final_en})"
+                    )
 
     final_label = KO_LABELS[final_en]
     final_idx = CNN_CLASSES.index(final_en)
     final_percent = probs_tensor[final_idx].item() * 100
+
+    print(f"[결정 경로] {decision_path}")
 
     # 혼합 개념 제거 — 항상 단일
     is_mixed = False
